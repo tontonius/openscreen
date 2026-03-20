@@ -1,10 +1,16 @@
+import { getKeyboardSoundRelativePaths } from "@/components/video-editor/keyboardSoundPacks";
 import type {
 	AnnotationRegion,
 	CropRegion,
+	CursorOverlaySettings,
+	CursorTelemetryPoint,
+	KeyboardTelemetryEvent,
+	MouseClickTelemetryEvent,
 	SpeedRegion,
 	TrimRegion,
 	ZoomRegion,
 } from "@/components/video-editor/types";
+import { getAssetPath } from "@/lib/assetPath";
 import { AudioProcessor } from "./audioEncoder";
 import { FrameRenderer } from "./frameRenderer";
 import { VideoMuxer } from "./muxer";
@@ -26,6 +32,10 @@ interface VideoExporterConfig extends ExportConfig {
 	videoPadding?: number;
 	cropRegion: CropRegion;
 	annotationRegions?: AnnotationRegion[];
+	cursorTelemetry?: CursorTelemetryPoint[];
+	keyboardTelemetry?: KeyboardTelemetryEvent[];
+	mouseTelemetry?: MouseClickTelemetryEvent[];
+	cursorOverlay?: CursorOverlaySettings;
 	previewWidth?: number;
 	previewHeight?: number;
 	onProgress?: (progress: ExportProgress) => void;
@@ -77,9 +87,14 @@ export class VideoExporter {
 				videoWidth: videoInfo.width,
 				videoHeight: videoInfo.height,
 				annotationRegions: this.config.annotationRegions,
+				cursorTelemetry: this.config.cursorTelemetry,
+				keyboardTelemetry: this.config.keyboardTelemetry,
+				mouseTelemetry: this.config.mouseTelemetry,
+				cursorOverlay: this.config.cursorOverlay,
 				speedRegions: this.config.speedRegions,
 				previewWidth: this.config.previewWidth,
 				previewHeight: this.config.previewHeight,
+				videoDurationMs: Math.round(videoInfo.duration * 1000),
 			});
 			await this.renderer.initialize();
 
@@ -87,7 +102,11 @@ export class VideoExporter {
 			await this.initializeEncoder();
 
 			// Initialize muxer (with audio if source has an audio track)
-			const hasAudio = videoInfo.hasAudio;
+			const shouldAddEffectsSounds =
+				this.config.cursorOverlay?.playKeyboardSounds === true &&
+				((this.config.keyboardTelemetry?.length ?? 0) > 0 ||
+					(this.config.mouseTelemetry?.length ?? 0) > 0);
+			const hasAudio = videoInfo.hasAudio || shouldAddEffectsSounds;
 			this.muxer = new VideoMuxer(this.config, hasAudio);
 			await this.muxer.initialize();
 
@@ -189,7 +208,38 @@ export class VideoExporter {
 				if (demuxer) {
 					console.log("[VideoExporter] Processing audio track...");
 					this.audioProcessor = new AudioProcessor();
-					await this.audioProcessor.process(demuxer, this.muxer!, this.config.trimRegions);
+					let keyboardSounds:
+						| { key: ArrayBuffer; space: ArrayBuffer; enter: ArrayBuffer }
+						| undefined;
+					if (shouldAddEffectsSounds) {
+						const soundPaths = getKeyboardSoundRelativePaths(
+							this.config.cursorOverlay?.keyboardSoundPack ?? "k1",
+						);
+						const [keyUrl, spaceUrl, enterUrl] = await Promise.all([
+							getAssetPath(soundPaths.key),
+							getAssetPath(soundPaths.space),
+							getAssetPath(soundPaths.enter),
+						]);
+						const [key, space, enter] = await Promise.all([
+							fetch(keyUrl).then((res) => res.arrayBuffer()),
+							fetch(spaceUrl).then((res) => res.arrayBuffer()),
+							fetch(enterUrl).then((res) => res.arrayBuffer()),
+						]);
+						keyboardSounds = { key, space, enter };
+					}
+					await this.audioProcessor.process(demuxer, this.muxer!, this.config.trimRegions, {
+						keyboardEvents: shouldAddEffectsSounds ? (this.config.keyboardTelemetry ?? []) : [],
+						mouseClickEvents: shouldAddEffectsSounds ? (this.config.mouseTelemetry ?? []) : [],
+						speedRegions: this.config.speedRegions,
+						keyboardSounds,
+						mouseClickSound: shouldAddEffectsSounds
+							? await fetch(await getAssetPath("assets/sounds/mouse_click.wav")).then((res) =>
+									res.arrayBuffer(),
+								)
+							: undefined,
+						durationMs: Math.round(effectiveDuration * 1000),
+						includeSourceAudio: videoInfo.hasAudio,
+					});
 				}
 			}
 
@@ -219,7 +269,14 @@ export class VideoExporter {
 				// Capture decoder config metadata from encoder output
 				if (meta?.decoderConfig?.description && !videoDescription) {
 					const desc = meta.decoderConfig.description;
-					videoDescription = new Uint8Array(desc instanceof ArrayBuffer ? desc : (desc as any));
+					if (desc instanceof ArrayBuffer) {
+						videoDescription = new Uint8Array(desc);
+					} else if (desc instanceof SharedArrayBuffer) {
+						videoDescription = new Uint8Array(desc);
+					} else {
+						const view = desc as ArrayBufferView;
+						videoDescription = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+					}
 					this.videoDescription = videoDescription;
 				}
 				// Capture colorSpace from encoder metadata if provided

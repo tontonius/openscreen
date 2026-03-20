@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen, shell } from "electron";
 import { RECORDINGS_DIR } from "../main";
+import { startNativeMacRecorder, stopNativeMacRecorder } from "../native/sckRecorder";
 
 const PROJECT_FILE_EXTENSION = "openscreen";
 const SHORTCUTS_FILE = path.join(app.getPath("userData"), "shortcuts.json");
@@ -26,6 +27,8 @@ function isTrustedProjectPath(filePath?: string | null) {
 }
 
 const CURSOR_TELEMETRY_VERSION = 1;
+const KEYBOARD_TELEMETRY_VERSION = 1;
+const MOUSE_TELEMETRY_VERSION = 1;
 const CURSOR_SAMPLE_INTERVAL_MS = 100;
 const MAX_CURSOR_SAMPLES = 60 * 60 * 10; // 1 hour @ 10Hz
 
@@ -35,10 +38,31 @@ interface CursorTelemetryPoint {
 	cy: number;
 }
 
+interface KeyboardTelemetryEvent {
+	timeMs: number;
+	keyType: "key" | "space" | "enter";
+}
+
+interface MouseClickTelemetryEvent {
+	timeMs: number;
+	button: "left" | "right" | "other";
+}
+
+interface CaptureBounds {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
 let cursorCaptureInterval: NodeJS.Timeout | null = null;
 let cursorCaptureStartTimeMs = 0;
 let activeCursorSamples: CursorTelemetryPoint[] = [];
 let pendingCursorSamples: CursorTelemetryPoint[] = [];
+let pendingKeyboardSamples: KeyboardTelemetryEvent[] = [];
+let pendingMouseClickSamples: MouseClickTelemetryEvent[] = [];
+let cursorHideWindow: BrowserWindow | null = null;
+let activeCaptureBounds: CaptureBounds | null = null;
 
 function clamp(value: number, min: number, max: number) {
 	return Math.min(max, Math.max(min, value));
@@ -51,6 +75,57 @@ function stopCursorCapture() {
 	}
 }
 
+async function persistPendingCursorTelemetry(videoPath: string) {
+	const telemetryPath = `${videoPath}.cursor.json`;
+	if (pendingCursorSamples.length > 0) {
+		await fs.writeFile(
+			telemetryPath,
+			JSON.stringify({ version: CURSOR_TELEMETRY_VERSION, samples: pendingCursorSamples }, null, 2),
+			"utf-8",
+		);
+	}
+	pendingCursorSamples = [];
+}
+
+async function persistPendingKeyboardTelemetry(videoPath: string) {
+	const telemetryPath = `${videoPath}.keyboard.json`;
+	if (pendingKeyboardSamples.length > 0) {
+		await fs.writeFile(
+			telemetryPath,
+			JSON.stringify(
+				{ version: KEYBOARD_TELEMETRY_VERSION, events: pendingKeyboardSamples },
+				null,
+				2,
+			),
+			"utf-8",
+		);
+	}
+	pendingKeyboardSamples = [];
+}
+
+async function persistPendingMouseClickTelemetry(videoPath: string) {
+	const telemetryPath = `${videoPath}.mouse.json`;
+	if (pendingMouseClickSamples.length > 0) {
+		await fs.writeFile(
+			telemetryPath,
+			JSON.stringify(
+				{ version: MOUSE_TELEMETRY_VERSION, events: pendingMouseClickSamples },
+				null,
+				2,
+			),
+			"utf-8",
+		);
+	}
+	pendingMouseClickSamples = [];
+}
+
+function closeCursorHideWindow() {
+	if (cursorHideWindow) {
+		cursorHideWindow.close();
+		cursorHideWindow = null;
+	}
+}
+
 function sampleCursorPoint() {
 	const cursor = screen.getCursorScreenPoint();
 	const sourceDisplayId = Number(selectedSource?.display_id);
@@ -58,7 +133,7 @@ function sampleCursorPoint() {
 		? (screen.getAllDisplays().find((display) => display.id === sourceDisplayId) ?? null)
 		: null;
 	const display = sourceDisplay ?? screen.getDisplayNearestPoint(cursor);
-	const bounds = display.bounds;
+	const bounds = activeCaptureBounds ?? display.bounds;
 	const width = Math.max(1, bounds.width);
 	const height = Math.max(1, bounds.height);
 
@@ -82,6 +157,7 @@ export function registerIpcHandlers(
 	getMainWindow: () => BrowserWindow | null,
 	getSourceSelectorWindow: () => BrowserWindow | null,
 	onRecordingStateChange?: (recording: boolean, sourceName: string) => void,
+	onSourceSelected?: (source: SelectedSource | null) => void,
 ) {
 	ipcMain.handle("get-sources", async (_, opts) => {
 		const sources = await desktopCapturer.getSources(opts);
@@ -96,6 +172,7 @@ export function registerIpcHandlers(
 
 	ipcMain.handle("select-source", (_, source: SelectedSource) => {
 		selectedSource = source;
+		onSourceSelected?.(selectedSource);
 		const sourceSelectorWin = getSourceSelectorWindow();
 		if (sourceSelectorWin) {
 			sourceSelectorWin.close();
@@ -130,19 +207,7 @@ export function registerIpcHandlers(
 			await fs.writeFile(videoPath, Buffer.from(videoData));
 			currentProjectPath = null;
 
-			const telemetryPath = `${videoPath}.cursor.json`;
-			if (pendingCursorSamples.length > 0) {
-				await fs.writeFile(
-					telemetryPath,
-					JSON.stringify(
-						{ version: CURSOR_TELEMETRY_VERSION, samples: pendingCursorSamples },
-						null,
-						2,
-					),
-					"utf-8",
-				);
-			}
-			pendingCursorSamples = [];
+			await persistPendingCursorTelemetry(videoPath);
 
 			return {
 				success: true,
@@ -183,6 +248,8 @@ export function registerIpcHandlers(
 			stopCursorCapture();
 			activeCursorSamples = [];
 			pendingCursorSamples = [];
+			pendingKeyboardSamples = [];
+			pendingMouseClickSamples = [];
 			cursorCaptureStartTimeMs = Date.now();
 			sampleCursorPoint();
 			cursorCaptureInterval = setInterval(sampleCursorPoint, CURSOR_SAMPLE_INTERVAL_MS);
@@ -190,12 +257,162 @@ export function registerIpcHandlers(
 			stopCursorCapture();
 			pendingCursorSamples = [...activeCursorSamples];
 			activeCursorSamples = [];
+			activeCaptureBounds = null;
+			pendingKeyboardSamples = [];
+			pendingMouseClickSamples = [];
 		}
 
 		const source = selectedSource || { name: "Screen" };
 		if (onRecordingStateChange) {
 			onRecordingStateChange(recording, source.name);
 		}
+	});
+
+	ipcMain.handle(
+		"start-native-screen-recording",
+		async (
+			_,
+			options?: {
+				source?: { id?: string; display_id?: string };
+				cursorMode?: "always" | "never";
+				frameRate?: number;
+			},
+		) => {
+			const timestamp = Date.now();
+			const outputPath = path.join(RECORDINGS_DIR, `recording-${timestamp}.mp4`);
+			const result = await startNativeMacRecorder({
+				outputPath,
+				sourceId: options?.source?.id,
+				displayId: options?.source?.display_id,
+				cursorMode: options?.cursorMode === "never" ? "never" : "always",
+				// Keyboard sounds are synthetic in post; keep native recorder audio clean by default.
+				microphoneEnabled: false,
+				frameRate: Math.max(30, Math.min(120, Math.round(options?.frameRate ?? 60))),
+			});
+
+			if (!result.success) {
+				activeCaptureBounds = null;
+				return {
+					success: false,
+					code: result.code,
+					message: result.message ?? "Failed to start native recorder",
+				};
+			}
+
+			activeCaptureBounds = {
+				x: result.ready?.sourceFrameX ?? 0,
+				y: result.ready?.sourceFrameY ?? 0,
+				width: Math.max(1, result.ready?.sourceFrameWidth ?? result.ready?.width ?? 1),
+				height: Math.max(1, result.ready?.sourceFrameHeight ?? result.ready?.height ?? 1),
+			};
+
+			return {
+				success: true,
+				path: outputPath,
+				width: result.ready?.width,
+				height: result.ready?.height,
+				frameRate: result.ready?.frameRate,
+				hasMicrophoneAudio: result.ready?.hasMicrophoneAudio === true,
+				sourceFrameX: result.ready?.sourceFrameX,
+				sourceFrameY: result.ready?.sourceFrameY,
+				sourceFrameWidth: result.ready?.sourceFrameWidth,
+				sourceFrameHeight: result.ready?.sourceFrameHeight,
+			};
+		},
+	);
+
+	ipcMain.handle("stop-native-screen-recording", async () => {
+		const result = await stopNativeMacRecorder();
+		activeCaptureBounds = null;
+		if (result.success && result.path) {
+			try {
+				pendingKeyboardSamples = [...(result.metadata?.keyboardEvents ?? [])];
+				pendingMouseClickSamples = [...(result.metadata?.mouseClickEvents ?? [])];
+				await persistPendingCursorTelemetry(result.path);
+				await persistPendingKeyboardTelemetry(result.path);
+				await persistPendingMouseClickTelemetry(result.path);
+			} catch (error) {
+				console.warn("Failed to persist telemetry for native recording:", error);
+			}
+		}
+		return result;
+	});
+
+	ipcMain.handle("hide-system-cursor", () => {
+		if (cursorHideWindow) {
+			return { success: true };
+		}
+
+		const displays = screen.getAllDisplays();
+		const bounds = displays.reduce(
+			(acc, display) => {
+				const left = Math.min(acc.x, display.bounds.x);
+				const top = Math.min(acc.y, display.bounds.y);
+				const right = Math.max(acc.x + acc.width, display.bounds.x + display.bounds.width);
+				const bottom = Math.max(acc.y + acc.height, display.bounds.y + display.bounds.height);
+				return {
+					x: left,
+					y: top,
+					width: right - left,
+					height: bottom - top,
+				};
+			},
+			{ x: Infinity, y: Infinity, width: 0, height: 0 },
+		);
+
+		cursorHideWindow = new BrowserWindow({
+			x: bounds.x,
+			y: bounds.y,
+			width: bounds.width,
+			height: bounds.height,
+			transparent: true,
+			frame: false,
+			alwaysOnTop: true,
+			skipTaskbar: true,
+			focusable: false,
+			hasShadow: false,
+			type: "toolbar",
+			fullscreenable: false,
+			webPreferences: {
+				nodeIntegration: false,
+			},
+		});
+
+		cursorHideWindow.on("closed", () => {
+			cursorHideWindow = null;
+		});
+
+		// On macOS, keep this overlay above fullscreen apps/spaces so cursor:none actually applies.
+		cursorHideWindow.setAlwaysOnTop(true, "screen-saver", 1);
+		cursorHideWindow.setVisibleOnAllWorkspaces(true, {
+			visibleOnFullScreen: true,
+			skipTransformProcessType: true,
+		});
+		cursorHideWindow.showInactive();
+		cursorHideWindow.setIgnoreMouseEvents(true, { forward: true });
+		cursorHideWindow.loadURL(`data:text/html,
+			<html>
+				<head>
+					<style>
+						* { cursor: none !important; }
+						html, body {
+							margin: 0;
+							padding: 0;
+							background: transparent;
+							overflow: hidden;
+						}
+					</style>
+				</head>
+				<body></body>
+			</html>
+		`);
+
+		return { success: true };
+	});
+
+	ipcMain.handle("show-system-cursor", () => {
+		closeCursorHideWindow();
+		return { success: true };
 	});
 
 	ipcMain.handle("get-cursor-telemetry", async (_, videoPath?: string) => {
@@ -251,6 +468,98 @@ export function registerIpcHandlers(
 		}
 	});
 
+	ipcMain.handle("get-keyboard-telemetry", async (_, videoPath?: string) => {
+		const targetVideoPath = videoPath ?? currentVideoPath;
+		if (!targetVideoPath) {
+			return { success: true, events: [] };
+		}
+
+		const telemetryPath = `${targetVideoPath}.keyboard.json`;
+		try {
+			const content = await fs.readFile(telemetryPath, "utf-8");
+			const parsed = JSON.parse(content);
+			const rawEvents = Array.isArray(parsed)
+				? parsed
+				: Array.isArray(parsed?.events)
+					? parsed.events
+					: [];
+
+			const events: KeyboardTelemetryEvent[] = rawEvents
+				.filter((event: unknown) => Boolean(event && typeof event === "object"))
+				.map((event: unknown) => {
+					const value = event as Partial<KeyboardTelemetryEvent>;
+					return {
+						timeMs:
+							typeof value.timeMs === "number" && Number.isFinite(value.timeMs)
+								? Math.max(0, Math.round(value.timeMs))
+								: 0,
+						keyType: value.keyType === "space" || value.keyType === "enter" ? value.keyType : "key",
+					};
+				})
+				.sort((a: KeyboardTelemetryEvent, b: KeyboardTelemetryEvent) => a.timeMs - b.timeMs);
+
+			return { success: true, events };
+		} catch (error) {
+			const nodeError = error as NodeJS.ErrnoException;
+			if (nodeError.code === "ENOENT") {
+				return { success: true, events: [] };
+			}
+			console.error("Failed to load keyboard telemetry:", error);
+			return {
+				success: false,
+				message: "Failed to load keyboard telemetry",
+				error: String(error),
+				events: [],
+			};
+		}
+	});
+
+	ipcMain.handle("get-mouse-telemetry", async (_, videoPath?: string) => {
+		const targetVideoPath = videoPath ?? currentVideoPath;
+		if (!targetVideoPath) {
+			return { success: true, events: [] };
+		}
+
+		const telemetryPath = `${targetVideoPath}.mouse.json`;
+		try {
+			const content = await fs.readFile(telemetryPath, "utf-8");
+			const parsed = JSON.parse(content);
+			const rawEvents = Array.isArray(parsed)
+				? parsed
+				: Array.isArray(parsed?.events)
+					? parsed.events
+					: [];
+
+			const events: MouseClickTelemetryEvent[] = rawEvents
+				.filter((event: unknown) => Boolean(event && typeof event === "object"))
+				.map((event: unknown) => {
+					const value = event as Partial<MouseClickTelemetryEvent>;
+					return {
+						timeMs:
+							typeof value.timeMs === "number" && Number.isFinite(value.timeMs)
+								? Math.max(0, Math.round(value.timeMs))
+								: 0,
+						button: value.button === "right" || value.button === "other" ? value.button : "left",
+					};
+				})
+				.sort((a: MouseClickTelemetryEvent, b: MouseClickTelemetryEvent) => a.timeMs - b.timeMs);
+
+			return { success: true, events };
+		} catch (error) {
+			const nodeError = error as NodeJS.ErrnoException;
+			if (nodeError.code === "ENOENT") {
+				return { success: true, events: [] };
+			}
+			console.error("Failed to load mouse telemetry:", error);
+			return {
+				success: false,
+				message: "Failed to load mouse telemetry",
+				error: String(error),
+				events: [],
+			};
+		}
+	});
+
 	ipcMain.handle("open-external-url", async (_, url: string) => {
 		try {
 			await shell.openExternal(url);
@@ -271,6 +580,33 @@ export function registerIpcHandlers(
 		} catch (err) {
 			console.error("Failed to resolve asset base path:", err);
 			return null;
+		}
+	});
+
+	ipcMain.handle("list-wallpapers", async () => {
+		try {
+			const wallpapersDir = app.isPackaged
+				? path.join(process.resourcesPath, "assets", "wallpapers")
+				: path.join(app.getAppPath(), "public", "wallpapers");
+
+			const entries = await fs.readdir(wallpapersDir, { withFileTypes: true });
+			const names = entries
+				.filter((entry) => entry.isFile())
+				.map((entry) => entry.name)
+				.filter((name) => /\.(jpg|jpeg|png|webp)$/i.test(name))
+				.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+
+			return {
+				success: true,
+				relativePaths: names.map((name) => `wallpapers/${name}`),
+			};
+		} catch (error) {
+			console.error("Failed to list wallpapers:", error);
+			return {
+				success: false,
+				relativePaths: [] as string[],
+				error: String(error),
+			};
 		}
 	});
 

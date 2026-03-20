@@ -259,12 +259,29 @@ export class StreamingVideoDecoder {
 			((segment.endSec - segment.startSec) / segment.speed) * targetFrameRate,
 		);
 		let exportFrameIndex = startExportFrameIndex;
+		let sourceSearchIndex = 0;
 
 		for (let i = 0; i < segmentFrameCount && !this.cancelled; i++) {
-			const sourceIdx = Math.min(
-				Math.floor((i * frames.length) / segmentFrameCount),
-				frames.length - 1,
-			);
+			const outputTimeSec = i / targetFrameRate;
+			const sourceTimeSec = segment.startSec + outputTimeSec * segment.speed;
+			const sourceTimeUs = sourceTimeSec * 1_000_000;
+
+			while (
+				sourceSearchIndex + 1 < frames.length &&
+				frames[sourceSearchIndex + 1].timestamp <= sourceTimeUs
+			) {
+				sourceSearchIndex += 1;
+			}
+
+			let sourceIdx = sourceSearchIndex;
+			if (sourceSearchIndex + 1 < frames.length) {
+				const leftDelta = Math.abs(frames[sourceSearchIndex].timestamp - sourceTimeUs);
+				const rightDelta = Math.abs(frames[sourceSearchIndex + 1].timestamp - sourceTimeUs);
+				if (rightDelta < leftDelta) {
+					sourceIdx = sourceSearchIndex + 1;
+				}
+			}
+
 			const sourceFrame = frames[sourceIdx];
 			const clone = new VideoFrame(sourceFrame, { timestamp: sourceFrame.timestamp });
 			await onFrame(clone, exportFrameIndex * frameDurationUs, sourceFrame.timestamp / 1000);
@@ -364,7 +381,9 @@ export class StreamingVideoDecoder {
 		if (this.demuxer) {
 			try {
 				this.demuxer.destroy();
-			} catch {}
+			} catch {
+				// demuxer may already be destroyed
+			}
 			this.demuxer = null;
 		}
 	}

@@ -108,7 +108,9 @@ export function CropControl({ videoElement, cropRegion, onCropChange }: CropCont
 		if (isDragging) {
 			try {
 				e.currentTarget.releasePointerCapture(e.pointerId);
-			} catch {}
+			} catch {
+				// releasePointerCapture is optional if pointer was not captured
+			}
 		}
 		setIsDragging(null);
 	};

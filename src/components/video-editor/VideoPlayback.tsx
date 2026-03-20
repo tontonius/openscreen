@@ -21,7 +21,25 @@ import { getAssetPath } from "@/lib/assetPath";
 import { type AspectRatio, formatAspectRatioForCSS } from "@/utils/aspectRatioUtils";
 import { AnnotationOverlay } from "./AnnotationOverlay";
 import {
+	type CursorSmoothingState,
+	getCursorPresetColorsForSvg,
+	getCursorSvgPath,
+	getCursorViewBox,
+	mapCursorToStage,
+	normalizeCursorOverlaySettings,
+	resolveCursorSampleAtTime,
+	transformPointByZoom,
+} from "./cursorOverlay";
+import { getKeyboardSoundRelativePaths } from "./keyboardSoundPacks";
+import { getTypingCursorHideAmountAtTime } from "./keyboardTelemetry";
+import { getMouseClickPressAmountAtTime } from "./mouseTelemetry";
+import {
 	type AnnotationRegion,
+	type CursorOverlaySettings,
+	type CursorTelemetryPoint,
+	DEFAULT_CROP_REGION,
+	type KeyboardTelemetryEvent,
+	type MouseClickTelemetryEvent,
 	type SpeedRegion,
 	type TrimRegion,
 	ZOOM_DEPTH_SCALES,
@@ -61,6 +79,10 @@ interface VideoPlaybackProps {
 	trimRegions?: TrimRegion[];
 	speedRegions?: SpeedRegion[];
 	aspectRatio: AspectRatio;
+	cursorTelemetry?: CursorTelemetryPoint[];
+	keyboardTelemetry?: KeyboardTelemetryEvent[];
+	mouseTelemetry?: MouseClickTelemetryEvent[];
+	cursorOverlay?: CursorOverlaySettings;
 	annotationRegions?: AnnotationRegion[];
 	selectedAnnotationId?: string | null;
 	onSelectAnnotation?: (id: string | null) => void;
@@ -103,6 +125,10 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 			trimRegions = [],
 			speedRegions = [],
 			aspectRatio,
+			cursorTelemetry = [],
+			keyboardTelemetry = [],
+			mouseTelemetry = [],
+			cursorOverlay,
 			annotationRegions = [],
 			selectedAnnotationId,
 			onSelectAnnotation,
@@ -148,6 +174,20 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 		const speedRegionsRef = useRef<SpeedRegion[]>([]);
 		const motionBlurEnabledRef = useRef(motionBlurEnabled);
 		const videoReadyRafRef = useRef<number | null>(null);
+		const cursorSmoothingRef = useRef<CursorSmoothingState | null>(null);
+		const keyboardAudioAssetsRef = useRef<{ key: string; space: string; enter: string } | null>(
+			null,
+		);
+		const keyboardEventCursorRef = useRef(0);
+		const activeKeyboardAudioRef = useRef<HTMLAudioElement | null>(null);
+		const mouseClickAudioRef = useRef<string | null>(null);
+		const mouseClickEventCursorRef = useRef(0);
+		const activeMouseClickAudioRef = useRef<HTMLAudioElement | null>(null);
+
+		const resolvedCursorOverlay = useMemo(
+			() => normalizeCursorOverlaySettings(cursorOverlay),
+			[cursorOverlay],
+		);
 
 		const clampFocusToStage = useCallback((focus: ZoomFocus, depth: ZoomDepth) => {
 			return clampFocusToStageUtil(focus, depth, stageSizeRef.current);
@@ -339,7 +379,9 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 			isDraggingFocusRef.current = false;
 			try {
 				event.currentTarget.releasePointerCapture(event.pointerId);
-			} catch {}
+			} catch {
+				// releasePointerCapture is optional if pointer was not captured
+			}
 		};
 
 		const handleOverlayPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -437,14 +479,16 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 				requestAnimationFrame(() => {
 					const finalApp = appRef.current;
 					if (wasPlaying && video) {
-						video.play().catch(() => {});
+						video.play().catch(() => {
+							// play() can reject if interrupted
+						});
 					}
 					if (tickerWasStarted && finalApp?.ticker) {
 						finalApp.ticker.start();
 					}
 				});
 			});
-		}, [pixiReady, videoReady, layoutVideoContent, cropRegion]);
+		}, [pixiReady, videoReady, layoutVideoContent]);
 
 		useEffect(() => {
 			if (!pixiReady || !videoReady) return;
@@ -545,11 +589,305 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 			allowPlaybackRef.current = false;
 			lockedVideoDimensionsRef.current = null;
 			setVideoReady(false);
+			cursorSmoothingRef.current = null;
 			if (videoReadyRafRef.current) {
 				cancelAnimationFrame(videoReadyRafRef.current);
 				videoReadyRafRef.current = null;
 			}
-		}, [videoPath]);
+		}, []);
+
+		const cursorPreview = (() => {
+			if (
+				!pixiReady ||
+				!videoReady ||
+				!resolvedCursorOverlay.enabled ||
+				cursorTelemetry.length === 0
+			) {
+				cursorSmoothingRef.current = null;
+				return null;
+			}
+
+			const durationMs = videoRef.current?.duration
+				? Math.max(0, videoRef.current.duration * 1000)
+				: undefined;
+			const timeMs = currentTime * 1000;
+			const previousState =
+				cursorSmoothingRef.current && timeMs < cursorSmoothingRef.current.timeMs
+					? null
+					: cursorSmoothingRef.current;
+			const resolved = resolveCursorSampleAtTime({
+				samples: cursorTelemetry,
+				timeMs,
+				settings: resolvedCursorOverlay,
+				previous: previousState,
+				durationMs,
+			});
+			if (!resolved) {
+				cursorSmoothingRef.current = null;
+				return null;
+			}
+			cursorSmoothingRef.current = resolved.state;
+			if (!resolved.visible) return null;
+			const typingHideAmount = resolvedCursorOverlay.cursorOffWhenTyping
+				? getTypingCursorHideAmountAtTime(
+						keyboardTelemetry,
+						currentTime * 1000,
+						resolvedCursorOverlay.cursorTypingHideDelayMs,
+					)
+				: 0;
+			if (typingHideAmount >= 0.999) return null;
+			const clickPressAmount = getMouseClickPressAmountAtTime(
+				mouseTelemetry,
+				currentTime * 1000,
+				100,
+			);
+
+			const crop = cropRegion ?? DEFAULT_CROP_REGION;
+			const stagePoint = mapCursorToStage(resolved.point, crop, {
+				x: baseMaskRef.current.x,
+				y: baseMaskRef.current.y,
+				width: baseMaskRef.current.width,
+				height: baseMaskRef.current.height,
+			});
+			if (!stagePoint) return null;
+
+			const zoomedPoint = transformPointByZoom(
+				stagePoint,
+				stageSizeRef.current,
+				animationStateRef.current.scale,
+				animationStateRef.current.focusX,
+				animationStateRef.current.focusY,
+			);
+
+			const viewBox = getCursorViewBox();
+			const colors = getCursorPresetColorsForSvg(resolvedCursorOverlay.preset);
+			const scale = resolvedCursorOverlay.size / viewBox.height;
+			const effectiveType = resolvedCursorOverlay.alwaysUseDefaultCursor
+				? "macos"
+				: resolvedCursorOverlay.cursorType;
+
+			return {
+				position: zoomedPoint,
+				width: viewBox.width * scale,
+				height: resolvedCursorOverlay.size,
+				offsetX: viewBox.hotspotX * scale,
+				offsetY: viewBox.hotspotY * scale,
+				colors,
+				cursorType: effectiveType,
+				rotationDeg: resolved.rotationDeg,
+				hideAmount: typingHideAmount,
+				clickPressAmount,
+			};
+		})();
+
+		useEffect(() => {
+			let mounted = true;
+			(async () => {
+				try {
+					const soundPaths = getKeyboardSoundRelativePaths(
+						resolvedCursorOverlay.keyboardSoundPack ?? "k1",
+					);
+					const [key, space, enter] = await Promise.all([
+						getAssetPath(soundPaths.key),
+						getAssetPath(soundPaths.space),
+						getAssetPath(soundPaths.enter),
+					]);
+					if (mounted) {
+						keyboardAudioAssetsRef.current = { key, space, enter };
+					}
+				} catch (error) {
+					console.warn("Unable to resolve keyboard sound assets:", error);
+					if (mounted) {
+						keyboardAudioAssetsRef.current = null;
+					}
+				}
+			})();
+			return () => {
+				mounted = false;
+			};
+		}, [resolvedCursorOverlay.keyboardSoundPack]);
+
+		useEffect(() => {
+			let mounted = true;
+			(async () => {
+				try {
+					const clickPath = await getAssetPath("assets/sounds/mouse_click.wav");
+					if (mounted) {
+						mouseClickAudioRef.current = clickPath;
+					}
+				} catch (error) {
+					console.warn("Unable to resolve mouse click sound asset:", error);
+					if (mounted) mouseClickAudioRef.current = null;
+				}
+			})();
+			return () => {
+				mounted = false;
+			};
+		}, []);
+
+		useEffect(() => {
+			const timeMs = Math.max(0, Math.round(currentTimeRef.current));
+			let idx = 0;
+			while (idx < keyboardTelemetry.length && keyboardTelemetry[idx].timeMs < timeMs) {
+				idx += 1;
+			}
+			keyboardEventCursorRef.current = idx;
+		}, [keyboardTelemetry]);
+
+		useEffect(() => {
+			const timeMs = Math.max(0, Math.round(currentTimeRef.current));
+			let idx = 0;
+			while (idx < mouseTelemetry.length && mouseTelemetry[idx].timeMs < timeMs) {
+				idx += 1;
+			}
+			mouseClickEventCursorRef.current = idx;
+		}, [mouseTelemetry]);
+
+		useEffect(() => {
+			if (
+				!isPlaying ||
+				!resolvedCursorOverlay.playKeyboardSounds ||
+				keyboardTelemetry.length === 0
+			) {
+				return;
+			}
+
+			let rafId = 0;
+			const playSample = (keyType: KeyboardTelemetryEvent["keyType"]) => {
+				const assets = keyboardAudioAssetsRef.current;
+				if (!assets) return;
+				const src =
+					keyType === "space" ? assets.space : keyType === "enter" ? assets.enter : assets.key;
+
+				if (activeKeyboardAudioRef.current) {
+					try {
+						activeKeyboardAudioRef.current.pause();
+						activeKeyboardAudioRef.current.currentTime = 0;
+					} catch {
+						// no-op
+					}
+				}
+
+				const audio = new Audio(src);
+				const volumeJitter = (Math.random() * 2 - 1) * 0.07;
+				audio.volume = Math.max(0.16, Math.min(0.45, 0.3 + volumeJitter));
+				audio.playbackRate = 1 + (Math.random() * 2 - 1) * 0.08;
+				try {
+					(
+						audio as HTMLAudioElement & { preservesPitch?: boolean; mozPreservesPitch?: boolean }
+					).preservesPitch = false;
+					(audio as HTMLAudioElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch =
+						false;
+					(audio as HTMLAudioElement & { mozPreservesPitch?: boolean }).mozPreservesPitch = false;
+				} catch {
+					// no-op
+				}
+				activeKeyboardAudioRef.current = audio;
+				void audio.play().catch(() => {
+					// playback can fail if interrupted
+				});
+			};
+
+			const tick = () => {
+				if (!isPlayingRef.current) return;
+				const nowMs = Math.max(
+					0,
+					Math.round(
+						videoRef.current ? videoRef.current.currentTime * 1000 : currentTimeRef.current,
+					),
+				);
+				const triggerWindowMs = 40;
+
+				while (
+					keyboardEventCursorRef.current < keyboardTelemetry.length &&
+					keyboardTelemetry[keyboardEventCursorRef.current].timeMs <= nowMs + triggerWindowMs
+				) {
+					const event = keyboardTelemetry[keyboardEventCursorRef.current];
+					if (event.timeMs >= nowMs - 250) {
+						playSample(event.keyType);
+					}
+					keyboardEventCursorRef.current += 1;
+				}
+				rafId = requestAnimationFrame(tick);
+			};
+
+			rafId = requestAnimationFrame(tick);
+			return () => {
+				if (rafId) cancelAnimationFrame(rafId);
+				if (activeKeyboardAudioRef.current) {
+					try {
+						activeKeyboardAudioRef.current.pause();
+						activeKeyboardAudioRef.current.currentTime = 0;
+					} catch {
+						// no-op
+					}
+					activeKeyboardAudioRef.current = null;
+				}
+			};
+		}, [isPlaying, keyboardTelemetry, resolvedCursorOverlay.playKeyboardSounds]);
+
+		useEffect(() => {
+			if (!isPlaying || mouseTelemetry.length === 0) {
+				return;
+			}
+
+			let rafId = 0;
+			const playClick = () => {
+				const src = mouseClickAudioRef.current;
+				if (!src) return;
+				if (activeMouseClickAudioRef.current) {
+					try {
+						activeMouseClickAudioRef.current.pause();
+						activeMouseClickAudioRef.current.currentTime = 0;
+					} catch {
+						// no-op
+					}
+				}
+				const audio = new Audio(src);
+				audio.volume = 0.3 + (Math.random() * 2 - 1) * 0.06;
+				audio.playbackRate = 1 + (Math.random() * 2 - 1) * 0.05;
+				activeMouseClickAudioRef.current = audio;
+				void audio.play().catch(() => {
+					// playback can fail if interrupted
+				});
+			};
+
+			const tick = () => {
+				if (!isPlayingRef.current) return;
+				const nowMs = Math.max(
+					0,
+					Math.round(
+						videoRef.current ? videoRef.current.currentTime * 1000 : currentTimeRef.current,
+					),
+				);
+				const triggerWindowMs = 35;
+				while (
+					mouseClickEventCursorRef.current < mouseTelemetry.length &&
+					mouseTelemetry[mouseClickEventCursorRef.current].timeMs <= nowMs + triggerWindowMs
+				) {
+					const event = mouseTelemetry[mouseClickEventCursorRef.current];
+					if (event.timeMs >= nowMs - 250) {
+						playClick();
+					}
+					mouseClickEventCursorRef.current += 1;
+				}
+				rafId = requestAnimationFrame(tick);
+			};
+
+			rafId = requestAnimationFrame(tick);
+			return () => {
+				if (rafId) cancelAnimationFrame(rafId);
+				if (activeMouseClickAudioRef.current) {
+					try {
+						activeMouseClickAudioRef.current.pause();
+						activeMouseClickAudioRef.current.currentTime = 0;
+					} catch {
+						// no-op
+					}
+					activeMouseClickAudioRef.current = null;
+				}
+			};
+		}, [isPlaying, mouseTelemetry]);
 
 		useEffect(() => {
 			if (!pixiReady || !videoReady) return;
@@ -644,7 +982,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 
 				videoSpriteRef.current = null;
 			};
-		}, [pixiReady, videoReady, onTimeUpdate, updateOverlayForRegion]);
+		}, [pixiReady, videoReady, onTimeUpdate, layoutVideoContent, onPlayStateChange]);
 
 		useEffect(() => {
 			if (!pixiReady || !videoReady) return;
@@ -895,6 +1233,56 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 							className="absolute rounded-md border border-[#34B27B]/80 bg-[#34B27B]/20 shadow-[0_0_0_1px_rgba(52,178,123,0.35)]"
 							style={{ display: "none", pointerEvents: "none" }}
 						/>
+						{cursorPreview && (
+							<div
+								className="absolute"
+								style={{
+									left: `${cursorPreview.position.x - cursorPreview.offsetX}px`,
+									top: `${cursorPreview.position.y - cursorPreview.offsetY}px`,
+									width: `${cursorPreview.width}px`,
+									height: `${cursorPreview.height}px`,
+									pointerEvents: "none",
+									filter: "drop-shadow(0 1px 1.5px rgba(0,0,0,0.3))",
+									opacity: Math.max(0, 1 - cursorPreview.hideAmount),
+									transform:
+										cursorPreview.cursorType === "macos"
+											? `rotate(${cursorPreview.rotationDeg}deg) scale(${Math.max(0.8, (1 - cursorPreview.hideAmount * 0.16) * (1 - cursorPreview.clickPressAmount * 0.14))})`
+											: `scale(${Math.max(0.8, (1 - cursorPreview.hideAmount * 0.16) * (1 - cursorPreview.clickPressAmount * 0.14))})`,
+									transformOrigin:
+										cursorPreview.cursorType === "macos" ? "2px 1px" : "center center",
+								}}
+							>
+								{cursorPreview.cursorType === "touch" ? (
+									<div
+										style={{
+											width: `${cursorPreview.height}px`,
+											height: `${cursorPreview.height}px`,
+											borderRadius: "9999px",
+											background: cursorPreview.colors.fill,
+											border: `2px solid ${cursorPreview.colors.stroke}`,
+											boxSizing: "border-box",
+											transform: `rotate(${cursorPreview.rotationDeg}deg)`,
+											transformOrigin: "center center",
+										}}
+									/>
+								) : (
+									<svg
+										viewBox={`0 0 ${getCursorViewBox().width} ${getCursorViewBox().height}`}
+										width="100%"
+										height="100%"
+									>
+										<path
+											d={getCursorSvgPath()}
+											fill={cursorPreview.colors.fill}
+											stroke={cursorPreview.colors.stroke}
+											strokeWidth={1.7}
+											strokeLinejoin="round"
+											strokeLinecap="round"
+										/>
+									</svg>
+								)}
+							</div>
+						)}
 						{(() => {
 							const filtered = (annotationRegions || []).filter((annotation) => {
 								if (typeof annotation.startMs !== "number" || typeof annotation.endMs !== "number")

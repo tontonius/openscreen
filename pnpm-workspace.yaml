@@ -1,0 +1,6 @@
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+  - esbuild
+  - lzma-native
+  - phantomjs-prebuilt

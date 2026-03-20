@@ -15,13 +15,23 @@ interface CursorTelemetryPoint {
 	cy: number;
 }
 
+interface KeyboardTelemetryEvent {
+	timeMs: number;
+	keyType: "key" | "space" | "enter";
+}
+
+interface MouseClickTelemetryEvent {
+	timeMs: number;
+	button: "left" | "right" | "other";
+}
+
 interface Window {
 	electronAPI: {
 		getSources: (opts: Electron.SourcesOptions) => Promise<ProcessedDesktopSource[]>;
 		switchToEditor: () => Promise<void>;
 		openSourceSelector: () => Promise<void>;
-		selectSource: (source: any) => Promise<any>;
-		getSelectedSource: () => Promise<any>;
+		selectSource: (source: ProcessedDesktopSource) => Promise<ProcessedDesktopSource | null>;
+		getSelectedSource: () => Promise<ProcessedDesktopSource | null>;
 		storeRecordedVideo: (
 			videoData: ArrayBuffer,
 			fileName: string,
@@ -38,10 +48,63 @@ interface Window {
 			error?: string;
 		}>;
 		getAssetBasePath: () => Promise<string | null>;
+		listWallpapers: () => Promise<{
+			success: boolean;
+			relativePaths: string[];
+			error?: string;
+		}>;
 		setRecordingState: (recording: boolean) => Promise<void>;
+		startNativeScreenRecording: (options?: {
+			source?: { id?: string; display_id?: string };
+			cursorMode?: "always" | "never";
+			frameRate?: number;
+		}) => Promise<{
+			success: boolean;
+			path?: string;
+			width?: number;
+			height?: number;
+			frameRate?: number;
+			hasMicrophoneAudio?: boolean;
+			sourceFrameX?: number;
+			sourceFrameY?: number;
+			sourceFrameWidth?: number;
+			sourceFrameHeight?: number;
+			code?: string;
+			message?: string;
+		}>;
+		stopNativeScreenRecording: () => Promise<{
+			success: boolean;
+			path?: string;
+			message?: string;
+			metadata?: {
+				frameRate: number;
+				width: number;
+				height: number;
+				mimeType: string;
+				capturedAt: number;
+				systemCursorMode: "always" | "never";
+				hasMicrophoneAudio: boolean;
+				keyboardEvents: Array<{ timeMs: number; keyType: "key" | "space" | "enter" }>;
+				mouseClickEvents: Array<{ timeMs: number; button: "left" | "right" | "other" }>;
+			};
+		}>;
+		hideSystemCursor: () => Promise<{ success: boolean }>;
+		showSystemCursor: () => Promise<{ success: boolean }>;
 		getCursorTelemetry: (videoPath?: string) => Promise<{
 			success: boolean;
 			samples: CursorTelemetryPoint[];
+			message?: string;
+			error?: string;
+		}>;
+		getKeyboardTelemetry: (videoPath?: string) => Promise<{
+			success: boolean;
+			events: KeyboardTelemetryEvent[];
+			message?: string;
+			error?: string;
+		}>;
+		getMouseTelemetry: (videoPath?: string) => Promise<{
+			success: boolean;
+			events: MouseClickTelemetryEvent[];
 			message?: string;
 			error?: string;
 		}>;

@@ -19,32 +19,39 @@ import {
 } from "@/lib/exporter";
 import { matchesShortcut } from "@/lib/shortcuts";
 import { type AspectRatio, getAspectRatioValue } from "@/utils/aspectRatioUtils";
+import { normalizeCursorOverlaySettings } from "./cursorOverlay";
 import { ExportDialog } from "./ExportDialog";
+import { normalizeKeyboardTelemetry } from "./keyboardTelemetry";
+import { normalizeMouseTelemetry } from "./mouseTelemetry";
 import PlaybackControls from "./PlaybackControls";
 import {
 	createProjectData,
+	DEFAULT_WALLPAPER_PATH,
 	deriveNextId,
 	fromFileUrl,
 	normalizeProjectEditor,
 	toFileUrl,
 	validateProjectData,
-	WALLPAPER_PATHS,
 } from "./projectPersistence";
 import { SettingsPanel } from "./SettingsPanel";
 import TimelineEditor from "./timeline/TimelineEditor";
 import {
 	type AnnotationRegion,
 	type CropRegion,
+	type CursorOverlaySettings,
 	type CursorTelemetryPoint,
 	clampFocusToDepth,
 	DEFAULT_ANNOTATION_POSITION,
 	DEFAULT_ANNOTATION_SIZE,
 	DEFAULT_ANNOTATION_STYLE,
 	DEFAULT_CROP_REGION,
+	DEFAULT_CURSOR_OVERLAY_SETTINGS,
 	DEFAULT_FIGURE_DATA,
 	DEFAULT_PLAYBACK_SPEED,
 	DEFAULT_ZOOM_DEPTH,
 	type FigureData,
+	type KeyboardTelemetryEvent,
+	type MouseClickTelemetryEvent,
 	type PlaybackSpeed,
 	type SpeedRegion,
 	type TrimRegion,
@@ -63,7 +70,7 @@ export default function VideoEditor() {
 	const [isPlaying, setIsPlaying] = useState(false);
 	const [currentTime, setCurrentTime] = useState(0);
 	const [duration, setDuration] = useState(0);
-	const [wallpaper, setWallpaper] = useState<string>(WALLPAPER_PATHS[0]);
+	const [wallpaper, setWallpaper] = useState<string>(DEFAULT_WALLPAPER_PATH);
 	const [shadowIntensity, setShadowIntensity] = useState(0);
 	const [showBlur, setShowBlur] = useState(false);
 	const [motionBlurEnabled, setMotionBlurEnabled] = useState(false);
@@ -72,12 +79,17 @@ export default function VideoEditor() {
 	const [cropRegion, setCropRegion] = useState<CropRegion>(DEFAULT_CROP_REGION);
 	const [zoomRegions, setZoomRegions] = useState<ZoomRegion[]>([]);
 	const [cursorTelemetry, setCursorTelemetry] = useState<CursorTelemetryPoint[]>([]);
+	const [keyboardTelemetry, setKeyboardTelemetry] = useState<KeyboardTelemetryEvent[]>([]);
+	const [mouseTelemetry, setMouseTelemetry] = useState<MouseClickTelemetryEvent[]>([]);
 	const [selectedZoomId, setSelectedZoomId] = useState<string | null>(null);
 	const [trimRegions, setTrimRegions] = useState<TrimRegion[]>([]);
 	const [selectedTrimId, setSelectedTrimId] = useState<string | null>(null);
 	const [speedRegions, setSpeedRegions] = useState<SpeedRegion[]>([]);
 	const [selectedSpeedId, setSelectedSpeedId] = useState<string | null>(null);
 	const [annotationRegions, setAnnotationRegions] = useState<AnnotationRegion[]>([]);
+	const [cursorOverlay, setCursorOverlay] = useState<CursorOverlaySettings>(
+		DEFAULT_CURSOR_OVERLAY_SETTINGS,
+	);
 	const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
 	const [isExporting, setIsExporting] = useState(false);
 	const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
@@ -91,6 +103,7 @@ export default function VideoEditor() {
 	const [gifSizePreset, setGifSizePreset] = useState<GifSizePreset>("medium");
 	const [exportedFilePath, setExportedFilePath] = useState<string | undefined>(undefined);
 	const [lastSavedSnapshot, setLastSavedSnapshot] = useState<string | null>(null);
+	const [previewReloadToken, setPreviewReloadToken] = useState(0);
 
 	const videoPlaybackRef = useRef<VideoPlaybackRef>(null);
 	const nextZoomIdRef = useRef(1);
@@ -136,6 +149,7 @@ export default function VideoEditor() {
 		setTrimRegions(normalizedEditor.trimRegions);
 		setSpeedRegions(normalizedEditor.speedRegions);
 		setAnnotationRegions(normalizedEditor.annotationRegions);
+		setCursorOverlay(normalizedEditor.cursorOverlay);
 		setAspectRatio(normalizedEditor.aspectRatio);
 		setExportQuality(normalizedEditor.exportQuality);
 		setExportFormat(normalizedEditor.exportFormat);
@@ -190,6 +204,7 @@ export default function VideoEditor() {
 				trimRegions,
 				speedRegions,
 				annotationRegions,
+				cursorOverlay,
 				aspectRatio,
 				exportQuality,
 				exportFormat,
@@ -212,6 +227,7 @@ export default function VideoEditor() {
 		trimRegions,
 		speedRegions,
 		annotationRegions,
+		cursorOverlay,
 		aspectRatio,
 		exportQuality,
 		exportFormat,
@@ -285,6 +301,7 @@ export default function VideoEditor() {
 				trimRegions,
 				speedRegions,
 				annotationRegions,
+				cursorOverlay,
 				aspectRatio,
 				exportQuality,
 				exportFormat,
@@ -337,6 +354,7 @@ export default function VideoEditor() {
 			trimRegions,
 			speedRegions,
 			annotationRegions,
+			cursorOverlay,
 			aspectRatio,
 			exportQuality,
 			exportFormat,
@@ -403,28 +421,40 @@ export default function VideoEditor() {
 	useEffect(() => {
 		let mounted = true;
 
-		async function loadCursorTelemetry() {
+		async function loadInputTelemetry() {
 			if (!videoPath) {
 				if (mounted) {
 					setCursorTelemetry([]);
+					setKeyboardTelemetry([]);
+					setMouseTelemetry([]);
 				}
 				return;
 			}
 
 			try {
-				const result = await window.electronAPI.getCursorTelemetry(fromFileUrl(videoPath));
+				const [mouseResult, cursorResult, keyboardResult] = await Promise.all([
+					window.electronAPI.getMouseTelemetry(fromFileUrl(videoPath)),
+					window.electronAPI.getCursorTelemetry(fromFileUrl(videoPath)),
+					window.electronAPI.getKeyboardTelemetry(fromFileUrl(videoPath)),
+				]);
 				if (mounted) {
-					setCursorTelemetry(result.success ? result.samples : []);
+					setMouseTelemetry(mouseResult.success ? normalizeMouseTelemetry(mouseResult.events) : []);
+					setCursorTelemetry(cursorResult.success ? cursorResult.samples : []);
+					setKeyboardTelemetry(
+						keyboardResult.success ? normalizeKeyboardTelemetry(keyboardResult.events) : [],
+					);
 				}
 			} catch (telemetryError) {
-				console.warn("Unable to load cursor telemetry:", telemetryError);
+				console.warn("Unable to load input telemetry:", telemetryError);
 				if (mounted) {
 					setCursorTelemetry([]);
+					setKeyboardTelemetry([]);
+					setMouseTelemetry([]);
 				}
 			}
 		}
 
-		loadCursorTelemetry();
+		loadInputTelemetry();
 
 		return () => {
 			mounted = false;
@@ -436,7 +466,14 @@ export default function VideoEditor() {
 		let mounted = true;
 		(async () => {
 			try {
-				const resolvedPath = await getAssetPath("wallpapers/wallpaper1.jpg");
+				const listResult = window.electronAPI?.listWallpapers
+					? await window.electronAPI.listWallpapers()
+					: { success: false, relativePaths: [] };
+				const firstRelativePath =
+					listResult.success && listResult.relativePaths.length > 0
+						? listResult.relativePaths[0]
+						: DEFAULT_WALLPAPER_PATH.replace(/^\//, "");
+				const resolvedPath = await getAssetPath(firstRelativePath);
 				if (mounted) {
 					setWallpaper(resolvedPath);
 				}
@@ -851,6 +888,26 @@ export default function VideoEditor() {
 		}
 	}, [selectedSpeedId, speedRegions]);
 
+	const showExportSuccessToast = useCallback((filePath: string) => {
+		toast.success(`Exported successfully to ${filePath}`, {
+			action: {
+				label: "Show in Folder",
+				onClick: async () => {
+					try {
+						const result = await window.electronAPI.revealInFolder(filePath);
+						if (!result.success) {
+							const errorMessage =
+								result.error || result.message || "Failed to reveal item in folder.";
+							toast.error(errorMessage);
+						}
+					} catch (err) {
+						toast.error(`Error revealing in folder: ${String(err)}`);
+					}
+				},
+			},
+		});
+	}, []);
+
 	const handleExport = useCallback(
 		async (settings: ExportSettings) => {
 			if (!videoPath) {
@@ -906,6 +963,10 @@ export default function VideoEditor() {
 						videoPadding: padding,
 						cropRegion,
 						annotationRegions,
+						cursorTelemetry,
+						keyboardTelemetry,
+						mouseTelemetry,
+						cursorOverlay,
 						previewWidth,
 						previewHeight,
 						onProgress: (progress: ExportProgress) => {
@@ -1033,6 +1094,10 @@ export default function VideoEditor() {
 						padding,
 						cropRegion,
 						annotationRegions,
+						cursorTelemetry,
+						keyboardTelemetry,
+						mouseTelemetry,
+						cursorOverlay,
 						previewWidth,
 						previewHeight,
 						onProgress: (progress: ExportProgress) => {
@@ -1076,6 +1141,8 @@ export default function VideoEditor() {
 			} finally {
 				setIsExporting(false);
 				exporterRef.current = null;
+				// Recover preview if export side-effects invalidated video textures.
+				setPreviewReloadToken((token) => token + 1);
 				// Reset dialog state to ensure it can be opened again on next export
 				// This fixes the bug where second export doesn't show save dialog
 				setShowExportDialog(false);
@@ -1095,9 +1162,14 @@ export default function VideoEditor() {
 			padding,
 			cropRegion,
 			annotationRegions,
+			cursorTelemetry,
+			keyboardTelemetry,
+			mouseTelemetry,
+			cursorOverlay,
 			isPlaying,
 			aspectRatio,
 			exportQuality,
+			showExportSuccessToast,
 		],
 	);
 
@@ -1162,26 +1234,6 @@ export default function VideoEditor() {
 		setExportedFilePath(undefined);
 	}, []);
 
-	const showExportSuccessToast = useCallback((filePath: string) => {
-		toast.success(`Exported successfully to ${filePath}`, {
-			action: {
-				label: "Show in Folder",
-				onClick: async () => {
-					try {
-						const result = await window.electronAPI.revealInFolder(filePath);
-						if (!result.success) {
-							const errorMessage =
-								result.error || result.message || "Failed to reveal item in folder.";
-							toast.error(errorMessage);
-						}
-					} catch (err) {
-						toast.error(`Error revealing in folder: ${String(err)}`);
-					}
-				},
-			},
-		});
-	}, []);
-
 	if (loading) {
 		return (
 			<div className="flex items-center justify-center h-screen bg-background">
@@ -1239,7 +1291,7 @@ export default function VideoEditor() {
 										}}
 									>
 										<VideoPlayback
-											key={videoPath || "no-video"}
+											key={`${videoPath || "no-video"}-${previewReloadToken}`}
 											aspectRatio={aspectRatio}
 											ref={videoPlaybackRef}
 											videoPath={videoPath || ""}
@@ -1263,6 +1315,10 @@ export default function VideoEditor() {
 											cropRegion={cropRegion}
 											trimRegions={trimRegions}
 											speedRegions={speedRegions}
+											cursorTelemetry={cursorTelemetry}
+											keyboardTelemetry={keyboardTelemetry}
+											mouseTelemetry={mouseTelemetry}
+											cursorOverlay={cursorOverlay}
 											annotationRegions={annotationRegions}
 											selectedAnnotationId={selectedAnnotationId}
 											onSelectAnnotation={handleSelectAnnotation}
@@ -1357,6 +1413,10 @@ export default function VideoEditor() {
 					onBlurChange={setShowBlur}
 					motionBlurEnabled={motionBlurEnabled}
 					onMotionBlurChange={setMotionBlurEnabled}
+					cursorOverlay={cursorOverlay}
+					onCursorOverlayChange={(update) =>
+						setCursorOverlay((prev) => normalizeCursorOverlaySettings({ ...prev, ...update }))
+					}
 					borderRadius={borderRadius}
 					onBorderRadiusChange={setBorderRadius}
 					padding={padding}

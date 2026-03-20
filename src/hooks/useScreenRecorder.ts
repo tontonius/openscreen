@@ -1,5 +1,5 @@
 import { fixWebmDuration } from "@fix-webm-duration/fix";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 // Target visually lossless 4K @ 60fps; fall back gracefully when hardware cannot keep up
@@ -55,12 +55,35 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	const [microphoneDeviceId, setMicrophoneDeviceId] = useState<string | undefined>(undefined);
 	const [systemAudioEnabled, setSystemAudioEnabled] = useState(false);
 	const mediaRecorder = useRef<MediaRecorder | null>(null);
+	const nativeRecordingActive = useRef(false);
 	const stream = useRef<MediaStream | null>(null);
 	const screenStream = useRef<MediaStream | null>(null);
 	const microphoneStream = useRef<MediaStream | null>(null);
 	const mixingContext = useRef<AudioContext | null>(null);
 	const chunks = useRef<Blob[]>([]);
 	const startTime = useRef<number>(0);
+	const systemCursorHidden = useRef(false);
+
+	const hideSystemCursor = useCallback(async () => {
+		if (!window.electronAPI?.hideSystemCursor || systemCursorHidden.current) return;
+		try {
+			await window.electronAPI.hideSystemCursor();
+			systemCursorHidden.current = true;
+		} catch (error) {
+			console.warn("Failed to hide system cursor:", error);
+		}
+	}, []);
+
+	const showSystemCursor = useCallback(async () => {
+		if (!window.electronAPI?.showSystemCursor || !systemCursorHidden.current) return;
+		try {
+			await window.electronAPI.showSystemCursor();
+		} catch (error) {
+			console.warn("Failed to show system cursor:", error);
+		} finally {
+			systemCursorHidden.current = false;
+		}
+	}, []);
 
 	const selectMimeType = () => {
 		const preferred = [
@@ -91,7 +114,35 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	};
 
 	const stopRecording = useRef(() => {
+		if (nativeRecordingActive.current) {
+			void (async () => {
+				try {
+					window.electronAPI?.setRecordingState(false);
+					const stopResult = await window.electronAPI?.stopNativeScreenRecording?.();
+					nativeRecordingActive.current = false;
+					setRecording(false);
+					if (stopResult?.success && stopResult.path) {
+						await window.electronAPI.setCurrentVideoPath(stopResult.path);
+						await window.electronAPI.switchToEditor();
+					} else {
+						const message = stopResult?.message || "Failed to stop native recording";
+						console.error(message);
+						toast.error(message);
+					}
+				} catch (error) {
+					nativeRecordingActive.current = false;
+					setRecording(false);
+					const message =
+						error instanceof Error ? error.message : "Failed to stop native recording";
+					console.error(message, error);
+					toast.error(message);
+				}
+			})();
+			return;
+		}
+
 		if (mediaRecorder.current?.state === "recording") {
+			void showSystemCursor();
 			if (stream.current) {
 				stream.current.getTracks().forEach((track) => track.stop());
 			}
@@ -104,7 +155,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				microphoneStream.current = null;
 			}
 			if (mixingContext.current) {
-				mixingContext.current.close().catch(() => {});
+				mixingContext.current.close().catch(() => {
+					// close may reject if already closed
+				});
 				mixingContext.current = null;
 			}
 			mediaRecorder.current.stop();
@@ -125,6 +178,13 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 
 		return () => {
 			if (cleanup) cleanup();
+			void showSystemCursor();
+			if (nativeRecordingActive.current) {
+				void window.electronAPI?.stopNativeScreenRecording?.().catch(() => {
+					// stop may fail during teardown
+				});
+				nativeRecordingActive.current = false;
+			}
 
 			if (mediaRecorder.current?.state === "recording") {
 				mediaRecorder.current.stop();
@@ -142,11 +202,13 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				microphoneStream.current = null;
 			}
 			if (mixingContext.current) {
-				mixingContext.current.close().catch(() => {});
+				mixingContext.current.close().catch(() => {
+					// close may reject if already closed
+				});
 				mixingContext.current = null;
 			}
 		};
-	}, []);
+	}, [showSystemCursor]);
 
 	const startRecording = async () => {
 		try {
@@ -156,9 +218,35 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				return;
 			}
 
+			const platform = await window.electronAPI.getPlatform();
+			if (platform === "darwin" && window.electronAPI.startNativeScreenRecording) {
+				const nativeStart = await window.electronAPI.startNativeScreenRecording({
+					source: {
+						id: typeof selectedSource.id === "string" ? selectedSource.id : undefined,
+						display_id:
+							typeof selectedSource.display_id === "string" ? selectedSource.display_id : undefined,
+					},
+					cursorMode: "never",
+					frameRate: TARGET_FRAME_RATE,
+				});
+
+				if (nativeStart.success) {
+					nativeRecordingActive.current = true;
+					setRecording(true);
+					window.electronAPI?.setRecordingState(true);
+					return;
+				}
+
+				console.warn(
+					"Native ScreenCaptureKit start failed, falling back to web recorder:",
+					nativeStart.code,
+					nativeStart.message,
+				);
+			}
+
 			let screenMediaStream: MediaStream;
 
-			const videoConstraints = {
+			const legacyVideoConstraints = {
 				mandatory: {
 					chromeMediaSource: CHROME_MEDIA_SOURCE,
 					chromeMediaSourceId: selectedSource.id,
@@ -166,33 +254,63 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 					maxHeight: TARGET_HEIGHT,
 					maxFrameRate: TARGET_FRAME_RATE,
 					minFrameRate: MIN_FRAME_RATE,
+					cursor: "never",
 				},
+				cursor: "never" as const,
 			};
+
+			const captureWithLegacyDesktopConstraints = async () => {
+				return await (navigator.mediaDevices as any).getUserMedia({
+					audio: false,
+					video: legacyVideoConstraints,
+				});
+			};
+
+			const captureWithDisplayMedia = async () => {
+				const getDisplayMedia = navigator.mediaDevices.getDisplayMedia?.bind(
+					navigator.mediaDevices,
+				);
+				if (typeof getDisplayMedia !== "function") {
+					throw new Error("getDisplayMedia is unavailable");
+				}
+				return await getDisplayMedia({
+					audio: false,
+					video: {
+						frameRate: { ideal: TARGET_FRAME_RATE, max: TARGET_FRAME_RATE },
+						cursor: "never",
+					} as MediaTrackConstraints,
+				});
+			};
+
+			try {
+				screenMediaStream = await captureWithDisplayMedia();
+			} catch (displayMediaError) {
+				console.warn(
+					"getDisplayMedia capture failed, falling back to legacy desktop constraints.",
+					displayMediaError,
+				);
+				screenMediaStream = await captureWithLegacyDesktopConstraints();
+			}
 
 			if (systemAudioEnabled) {
 				try {
-					screenMediaStream = await (navigator.mediaDevices as any).getUserMedia({
+					const systemAudioStream = await (navigator.mediaDevices as any).getUserMedia({
 						audio: {
 							mandatory: {
 								chromeMediaSource: CHROME_MEDIA_SOURCE,
 								chromeMediaSourceId: selectedSource.id,
 							},
 						},
-						video: videoConstraints,
+						video: false,
 					});
+					const systemAudioTrack = systemAudioStream.getAudioTracks()[0];
+					if (systemAudioTrack) {
+						screenMediaStream.addTrack(systemAudioTrack);
+					}
 				} catch (audioErr) {
-					console.warn("System audio capture failed, falling back to video-only:", audioErr);
+					console.warn("System audio capture failed, recording without system audio:", audioErr);
 					toast.error("System audio not available. Recording without system audio.");
-					screenMediaStream = await (navigator.mediaDevices as any).getUserMedia({
-						audio: false,
-						video: videoConstraints,
-					});
 				}
-			} else {
-				screenMediaStream = await (navigator.mediaDevices as any).getUserMedia({
-					audio: false,
-					video: videoConstraints,
-				});
 			}
 			screenStream.current = screenMediaStream;
 
@@ -250,10 +368,16 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				stream.current.addTrack(micAudioTrack);
 			}
 			try {
-				await videoTrack.applyConstraints({
+				const desktopTrackConstraints = {
 					frameRate: { ideal: TARGET_FRAME_RATE, max: TARGET_FRAME_RATE },
 					width: { ideal: TARGET_WIDTH, max: TARGET_WIDTH },
 					height: { ideal: TARGET_HEIGHT, max: TARGET_HEIGHT },
+					// Keep desktop stream cursor hidden since we render a custom cursor in post.
+					cursor: "never",
+				} as unknown as MediaTrackConstraints;
+
+				await videoTrack.applyConstraints({
+					...desktopTrackConstraints,
 				});
 			} catch (constraintError) {
 				console.warn(
@@ -296,6 +420,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				if (e.data && e.data.size > 0) chunks.current.push(e.data);
 			};
 			recorder.onstop = async () => {
+				await showSystemCursor();
 				stream.current = null;
 				if (chunks.current.length === 0) return;
 				const duration = Date.now() - startTime.current;
@@ -330,6 +455,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			recorder.onerror = () => setRecording(false);
 			recorder.start(RECORDER_TIMESLICE_MS);
 			startTime.current = Date.now();
+			await hideSystemCursor();
 			setRecording(true);
 			window.electronAPI?.setRecordingState(true);
 		} catch (error) {
@@ -354,9 +480,12 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				microphoneStream.current = null;
 			}
 			if (mixingContext.current) {
-				mixingContext.current.close().catch(() => {});
+				mixingContext.current.close().catch(() => {
+					// close may reject if already closed
+				});
 				mixingContext.current = null;
 			}
+			await showSystemCursor();
 		}
 	};
 

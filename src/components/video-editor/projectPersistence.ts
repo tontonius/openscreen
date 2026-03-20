@@ -1,8 +1,10 @@
 import type { ExportFormat, ExportQuality, GifFrameRate, GifSizePreset } from "@/lib/exporter";
 import { ASPECT_RATIOS, type AspectRatio } from "@/utils/aspectRatioUtils";
+import { normalizeCursorOverlaySettings } from "./cursorOverlay";
 import {
 	type AnnotationRegion,
 	type CropRegion,
+	type CursorOverlaySettings,
 	DEFAULT_ANNOTATION_POSITION,
 	DEFAULT_ANNOTATION_SIZE,
 	DEFAULT_ANNOTATION_STYLE,
@@ -15,12 +17,8 @@ import {
 	type ZoomRegion,
 } from "./types";
 
-const WALLPAPER_COUNT = 18;
-
-export const WALLPAPER_PATHS = Array.from(
-	{ length: WALLPAPER_COUNT },
-	(_, i) => `/wallpapers/wallpaper${i + 1}.jpg`,
-);
+export const DEFAULT_WALLPAPER_PATH = "/wallpapers/wallpaper1.jpg";
+export const WALLPAPER_PATHS = [DEFAULT_WALLPAPER_PATH];
 
 export const PROJECT_VERSION = 1;
 
@@ -36,6 +34,7 @@ export interface ProjectEditorState {
 	trimRegions: TrimRegion[];
 	speedRegions: SpeedRegion[];
 	annotationRegions: AnnotationRegion[];
+	cursorOverlay: CursorOverlaySettings;
 	aspectRatio: AspectRatio;
 	exportQuality: ExportQuality;
 	exportFormat: ExportFormat;
@@ -155,7 +154,10 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 						region.speed === 1.25 ||
 						region.speed === 1.5 ||
 						region.speed === 1.75 ||
-						region.speed === 2
+						region.speed === 2 ||
+						region.speed === 4 ||
+						region.speed === 8 ||
+						region.speed === 16
 							? region.speed
 							: DEFAULT_PLAYBACK_SPEED;
 
@@ -270,6 +272,7 @@ export function normalizeProjectEditor(editor: Partial<ProjectEditorState>): Pro
 		trimRegions: normalizedTrimRegions,
 		speedRegions: normalizedSpeedRegions,
 		annotationRegions: normalizedAnnotationRegions,
+		cursorOverlay: normalizeCursorOverlaySettings(editor.cursorOverlay),
 		aspectRatio:
 			editor.aspectRatio && validAspectRatios.has(editor.aspectRatio) ? editor.aspectRatio : "16:9",
 		exportQuality:

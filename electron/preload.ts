@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 		// ask main process for the correct base path (production vs dev)
 		return await ipcRenderer.invoke("get-asset-base-path");
 	},
+	listWallpapers: async () => {
+		return await ipcRenderer.invoke("list-wallpapers");
+	},
 	getSources: async (opts: Electron.SourcesOptions) => {
 		return await ipcRenderer.invoke("get-sources", opts);
 	},
@@ -20,7 +23,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	openSourceSelector: () => {
 		return ipcRenderer.invoke("open-source-selector");
 	},
-	selectSource: (source: any) => {
+	selectSource: (source: ProcessedDesktopSource) => {
 		return ipcRenderer.invoke("select-source", source);
 	},
 	getSelectedSource: () => {
@@ -37,8 +40,30 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	setRecordingState: (recording: boolean) => {
 		return ipcRenderer.invoke("set-recording-state", recording);
 	},
+	startNativeScreenRecording: (options?: {
+		source?: { id?: string; display_id?: string };
+		cursorMode?: "always" | "never";
+		frameRate?: number;
+	}) => {
+		return ipcRenderer.invoke("start-native-screen-recording", options);
+	},
+	stopNativeScreenRecording: () => {
+		return ipcRenderer.invoke("stop-native-screen-recording");
+	},
+	hideSystemCursor: () => {
+		return ipcRenderer.invoke("hide-system-cursor");
+	},
+	showSystemCursor: () => {
+		return ipcRenderer.invoke("show-system-cursor");
+	},
 	getCursorTelemetry: (videoPath?: string) => {
 		return ipcRenderer.invoke("get-cursor-telemetry", videoPath);
+	},
+	getKeyboardTelemetry: (videoPath?: string) => {
+		return ipcRenderer.invoke("get-keyboard-telemetry", videoPath);
+	},
+	getMouseTelemetry: (videoPath?: string) => {
+		return ipcRenderer.invoke("get-mouse-telemetry", videoPath);
 	},
 	onStopRecordingFromTray: (callback: () => void) => {
 		const listener = () => callback();

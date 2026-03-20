@@ -33,21 +33,21 @@ import { cn } from "@/lib/utils";
 import { type AspectRatio } from "@/utils/aspectRatioUtils";
 import { AnnotationSettingsPanel } from "./AnnotationSettingsPanel";
 import { CropControl } from "./CropControl";
+import { CURSOR_PRESET_OPTIONS, CURSOR_TYPE_OPTIONS } from "./cursorOverlay";
 import { KeyboardShortcutsHelp } from "./KeyboardShortcutsHelp";
+import { KEYBOARD_SOUND_PACK_OPTIONS } from "./keyboardSoundPacks";
 import type {
 	AnnotationRegion,
 	AnnotationType,
 	CropRegion,
+	CursorOverlaySettings,
+	FigureData,
 	PlaybackSpeed,
 	ZoomDepth,
 } from "./types";
 import { SPEED_OPTIONS } from "./types";
 
-const WALLPAPER_COUNT = 18;
-const WALLPAPER_RELATIVE = Array.from(
-	{ length: WALLPAPER_COUNT },
-	(_, i) => `wallpapers/wallpaper${i + 1}.jpg`,
-);
+const DEFAULT_WALLPAPER_RELATIVE = "wallpapers/wallpaper1.jpg";
 const GRADIENTS = [
 	"linear-gradient( 111.6deg,  rgba(114,167,232,1) 9.4%, rgba(253,129,82,1) 43.9%, rgba(253,129,82,1) 54.8%, rgba(249,202,86,1) 86.3% )",
 	"linear-gradient(120deg, #d4fc79 0%, #96e6a1 100%)",
@@ -90,6 +90,8 @@ interface SettingsPanelProps {
 	onBlurChange?: (showBlur: boolean) => void;
 	motionBlurEnabled?: boolean;
 	onMotionBlurChange?: (enabled: boolean) => void;
+	cursorOverlay?: CursorOverlaySettings;
+	onCursorOverlayChange?: (update: Partial<CursorOverlaySettings>) => void;
 	borderRadius?: number;
 	onBorderRadiusChange?: (radius: number) => void;
 	padding?: number;
@@ -118,7 +120,7 @@ interface SettingsPanelProps {
 	onAnnotationContentChange?: (id: string, content: string) => void;
 	onAnnotationTypeChange?: (id: string, type: AnnotationType) => void;
 	onAnnotationStyleChange?: (id: string, style: Partial<AnnotationRegion["style"]>) => void;
-	onAnnotationFigureDataChange?: (id: string, figureData: any) => void;
+	onAnnotationFigureDataChange?: (id: string, figureData: FigureData) => void;
 	onAnnotationDelete?: (id: string) => void;
 	selectedSpeedId?: string | null;
 	selectedSpeedValue?: PlaybackSpeed | null;
@@ -152,6 +154,8 @@ export function SettingsPanel({
 	onBlurChange,
 	motionBlurEnabled = false,
 	onMotionBlurChange,
+	cursorOverlay,
+	onCursorOverlayChange,
 	borderRadius = 0,
 	onBorderRadiusChange,
 	padding = 50,
@@ -194,10 +198,17 @@ export function SettingsPanel({
 		let mounted = true;
 		(async () => {
 			try {
-				const resolved = await Promise.all(WALLPAPER_RELATIVE.map((p) => getAssetPath(p)));
+				const listResult = window.electronAPI?.listWallpapers
+					? await window.electronAPI.listWallpapers()
+					: { success: false, relativePaths: [] };
+				const relativePaths =
+					listResult.success && listResult.relativePaths.length > 0
+						? listResult.relativePaths
+						: [DEFAULT_WALLPAPER_RELATIVE];
+				const resolved = await Promise.all(relativePaths.map((p) => getAssetPath(p)));
 				if (mounted) setWallpaperPaths(resolved);
 			} catch {
-				if (mounted) setWallpaperPaths(WALLPAPER_RELATIVE.map((p) => `/${p}`));
+				if (mounted) setWallpaperPaths([`/${DEFAULT_WALLPAPER_RELATIVE}`]);
 			}
 		})();
 		return () => {
@@ -285,7 +296,7 @@ export function SettingsPanel({
 		setCustomImages((prev) => prev.filter((img) => img !== imageUrl));
 		// If the removed image was selected, clear selection
 		if (selected === imageUrl) {
-			onWallpaperChange(wallpaperPaths[0] || WALLPAPER_RELATIVE[0]);
+			onWallpaperChange(wallpaperPaths[0] || `/${DEFAULT_WALLPAPER_RELATIVE}`);
 		}
 	};
 
@@ -398,7 +409,7 @@ export function SettingsPanel({
 							</span>
 						)}
 					</div>
-					<div className="grid grid-cols-7 gap-1.5">
+					<div className="grid grid-cols-5 gap-1.5">
 						{SPEED_OPTIONS.map((option) => {
 							const isActive = selectedSpeedValue === option.speed;
 							return (
@@ -439,6 +450,457 @@ export function SettingsPanel({
 							Delete Speed Region
 						</Button>
 					)}
+				</div>
+
+				<div className="mb-4 rounded-xl bg-white/[0.02] border border-white/5 p-3">
+					<div className="flex items-center justify-between mb-3">
+						<span className="text-xs font-medium text-slate-200">Cursor</span>
+						<Switch
+							checked={cursorOverlay?.enabled ?? true}
+							onCheckedChange={(enabled) => onCursorOverlayChange?.({ enabled })}
+							className="data-[state=checked]:bg-[#34B27B] scale-90"
+						/>
+					</div>
+
+					<div className="grid grid-cols-3 gap-1.5 mb-3">
+						{CURSOR_PRESET_OPTIONS.map((preset) => {
+							const isActive = (cursorOverlay?.preset ?? "classic") === preset.value;
+							return (
+								<Button
+									key={preset.value}
+									type="button"
+									disabled={!cursorOverlay?.enabled}
+									onClick={() => onCursorOverlayChange?.({ preset: preset.value })}
+									className={cn(
+										"h-7 rounded-md border px-1 text-[10px] font-medium",
+										cursorOverlay?.enabled
+											? "opacity-100 cursor-pointer"
+											: "opacity-40 cursor-not-allowed",
+										isActive
+											? "border-[#34B27B] bg-[#34B27B]/20 text-white"
+											: "border-white/10 bg-white/5 text-slate-400 hover:text-slate-200",
+									)}
+								>
+									{preset.label}
+								</Button>
+							);
+						})}
+					</div>
+
+					<div className="grid grid-cols-2 gap-1.5 mb-3">
+						{CURSOR_TYPE_OPTIONS.map((type) => {
+							const isActive = (cursorOverlay?.cursorType ?? "macos") === type.value;
+							return (
+								<Button
+									key={type.value}
+									type="button"
+									disabled={!cursorOverlay?.enabled}
+									onClick={() => onCursorOverlayChange?.({ cursorType: type.value })}
+									className={cn(
+										"h-7 rounded-md border px-1 text-[10px] font-medium",
+										cursorOverlay?.enabled
+											? "opacity-100 cursor-pointer"
+											: "opacity-40 cursor-not-allowed",
+										isActive
+											? "border-[#34B27B] bg-[#34B27B]/20 text-white"
+											: "border-white/10 bg-white/5 text-slate-400 hover:text-slate-200",
+									)}
+								>
+									{type.label}
+								</Button>
+							);
+						})}
+					</div>
+
+					<div className="grid grid-cols-2 gap-2">
+						<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+							<div className="flex items-center justify-between mb-1">
+								<div className="text-[10px] font-medium text-slate-300">Size</div>
+								<span className="text-[10px] text-slate-500 font-mono">
+									{Math.round(cursorOverlay?.size ?? 34)}px
+								</span>
+							</div>
+							<Slider
+								disabled={!cursorOverlay?.enabled}
+								value={[cursorOverlay?.size ?? 34]}
+								onValueChange={(values) => onCursorOverlayChange?.({ size: values[0] })}
+								min={20}
+								max={96}
+								step={1}
+								className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+							/>
+						</div>
+						<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+							<div className="flex items-center justify-between mb-1">
+								<div className="text-[10px] font-medium text-slate-300">Smoothing</div>
+								<span className="text-[10px] text-slate-500 font-mono">
+									{Math.round((cursorOverlay?.smoothing ?? 0.55) * 100)}%
+								</span>
+							</div>
+							<Slider
+								disabled={!cursorOverlay?.enabled}
+								value={[cursorOverlay?.smoothing ?? 0.55]}
+								onValueChange={(values) => onCursorOverlayChange?.({ smoothing: values[0] })}
+								min={0}
+								max={1}
+								step={0.01}
+								className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+							/>
+						</div>
+					</div>
+
+					<div className="grid grid-cols-1 gap-2 mt-2">
+						<div className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
+							<div className="text-[10px] font-medium text-slate-300">Play keyboard sounds</div>
+							<Switch
+								checked={cursorOverlay?.playKeyboardSounds ?? true}
+								onCheckedChange={(playKeyboardSounds) =>
+									onCursorOverlayChange?.({ playKeyboardSounds })
+								}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+						{cursorOverlay?.playKeyboardSounds && (
+							<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+								<div className="text-[10px] font-medium text-slate-300 mb-2">
+									Keyboard sound pack
+								</div>
+								<div className="grid grid-cols-6 gap-1.5">
+									{KEYBOARD_SOUND_PACK_OPTIONS.map((pack) => {
+										const isActive = (cursorOverlay?.keyboardSoundPack ?? "k1") === pack.value;
+										return (
+											<Button
+												key={pack.value}
+												type="button"
+												onClick={() => onCursorOverlayChange?.({ keyboardSoundPack: pack.value })}
+												className={cn(
+													"h-7 rounded-md border px-1 text-[10px] font-medium",
+													isActive
+														? "border-[#34B27B] bg-[#34B27B]/20 text-white"
+														: "border-white/10 bg-white/5 text-slate-400 hover:text-slate-200",
+												)}
+											>
+												{pack.label}
+											</Button>
+										);
+									})}
+								</div>
+							</div>
+						)}
+						<div className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
+							<div className="text-[10px] font-medium text-slate-300">Cursor off when typing</div>
+							<Switch
+								checked={cursorOverlay?.cursorOffWhenTyping ?? false}
+								onCheckedChange={(cursorOffWhenTyping) =>
+									onCursorOverlayChange?.({ cursorOffWhenTyping })
+								}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+						{cursorOverlay?.cursorOffWhenTyping && (
+							<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+								<div className="flex items-center justify-between mb-1">
+									<div className="text-[10px] font-medium text-slate-300">
+										Show cursor after typing
+									</div>
+									<span className="text-[10px] text-slate-500 font-mono">
+										{Math.round(cursorOverlay?.cursorTypingHideDelayMs ?? 650)}ms
+									</span>
+								</div>
+								<Slider
+									value={[cursorOverlay?.cursorTypingHideDelayMs ?? 650]}
+									onValueChange={(values) =>
+										onCursorOverlayChange?.({ cursorTypingHideDelayMs: values[0] })
+									}
+									min={150}
+									max={2000}
+									step={10}
+									className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+								/>
+							</div>
+						)}
+						<div className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
+							<div className="text-[10px] font-medium text-slate-300">
+								Always default system cursor
+							</div>
+							<Switch
+								checked={cursorOverlay?.alwaysUseDefaultCursor ?? true}
+								onCheckedChange={(alwaysUseDefaultCursor) =>
+									onCursorOverlayChange?.({ alwaysUseDefaultCursor })
+								}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+						<div className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
+							<div className="text-[10px] font-medium text-slate-300">Hide when idle</div>
+							<Switch
+								checked={cursorOverlay?.hideWhenIdle ?? false}
+								onCheckedChange={(hideWhenIdle) => onCursorOverlayChange?.({ hideWhenIdle })}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+						{cursorOverlay?.hideWhenIdle && (
+							<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+								<div className="flex items-center justify-between mb-1">
+									<div className="text-[10px] font-medium text-slate-300">Idle hide delay</div>
+									<span className="text-[10px] text-slate-500 font-mono">
+										{Math.round(cursorOverlay?.idleHideDelayMs ?? 1400)}ms
+									</span>
+								</div>
+								<Slider
+									value={[cursorOverlay?.idleHideDelayMs ?? 1400]}
+									onValueChange={(values) =>
+										onCursorOverlayChange?.({ idleHideDelayMs: values[0] })
+									}
+									min={200}
+									max={4000}
+									step={50}
+									className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+								/>
+							</div>
+						)}
+						<div className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/5">
+							<div className="text-[10px] font-medium text-slate-300">Loop cursor position</div>
+							<Switch
+								checked={cursorOverlay?.loopToStart ?? false}
+								onCheckedChange={(loopToStart) => onCursorOverlayChange?.({ loopToStart })}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+						{cursorOverlay?.loopToStart && (
+							<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+								<div className="flex items-center justify-between mb-1">
+									<div className="text-[10px] font-medium text-slate-300">Loop transition</div>
+									<span className="text-[10px] text-slate-500 font-mono">
+										{Math.round(cursorOverlay?.loopDurationMs ?? 600)}ms
+									</span>
+								</div>
+								<Slider
+									value={[cursorOverlay?.loopDurationMs ?? 600]}
+									onValueChange={(values) => onCursorOverlayChange?.({ loopDurationMs: values[0] })}
+									min={120}
+									max={2500}
+									step={20}
+									className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+								/>
+							</div>
+						)}
+					</div>
+
+					<div className="mt-2 rounded-lg border border-white/5 bg-white/[0.03] p-2 space-y-2">
+						<div className="text-[10px] uppercase tracking-wider text-slate-400">Advanced</div>
+						<div className="flex items-center justify-between">
+							<div className="text-[10px] text-slate-300">Rotate while moving</div>
+							<Switch
+								checked={cursorOverlay?.rotateWhileMoving ?? false}
+								onCheckedChange={(rotateWhileMoving) =>
+									onCursorOverlayChange?.({ rotateWhileMoving })
+								}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+						{cursorOverlay?.rotateWhileMoving && (
+							<div className="space-y-2 rounded-lg border border-amber-400/20 bg-amber-500/5 p-2">
+								<div className="text-[10px] uppercase tracking-wider text-amber-300">
+									Rotation Tuning (Debug)
+								</div>
+								<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+									<div className="flex items-center justify-between mb-1">
+										<div className="text-[10px] font-medium text-slate-300">Move threshold</div>
+										<span className="text-[10px] text-slate-500 font-mono">
+											{(cursorOverlay?.rotationMoveThreshold ?? 0.08).toFixed(3)}
+										</span>
+									</div>
+									<Slider
+										value={[cursorOverlay?.rotationMoveThreshold ?? 0.08]}
+										onValueChange={(values) =>
+											onCursorOverlayChange?.({ rotationMoveThreshold: values[0] })
+										}
+										min={0.005}
+										max={0.4}
+										step={0.005}
+										className="w-full [&_[role=slider]]:bg-amber-400 [&_[role=slider]]:border-amber-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+									/>
+								</div>
+								<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+									<div className="flex items-center justify-between mb-1">
+										<div className="text-[10px] font-medium text-slate-300">Full tilt speed</div>
+										<span className="text-[10px] text-slate-500 font-mono">
+											{(cursorOverlay?.rotationFullTiltSpeed ?? 1).toFixed(2)}
+										</span>
+									</div>
+									<Slider
+										value={[cursorOverlay?.rotationFullTiltSpeed ?? 1]}
+										onValueChange={(values) =>
+											onCursorOverlayChange?.({ rotationFullTiltSpeed: values[0] })
+										}
+										min={0.06}
+										max={3}
+										step={0.01}
+										className="w-full [&_[role=slider]]:bg-amber-400 [&_[role=slider]]:border-amber-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+									/>
+								</div>
+								<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+									<div className="flex items-center justify-between mb-1">
+										<div className="text-[10px] font-medium text-slate-300">Follow strength</div>
+										<span className="text-[10px] text-slate-500 font-mono">
+											{Math.round(cursorOverlay?.rotationFollowStrength ?? 30)}
+										</span>
+									</div>
+									<Slider
+										value={[cursorOverlay?.rotationFollowStrength ?? 30]}
+										onValueChange={(values) =>
+											onCursorOverlayChange?.({ rotationFollowStrength: values[0] })
+										}
+										min={2}
+										max={80}
+										step={1}
+										className="w-full [&_[role=slider]]:bg-amber-400 [&_[role=slider]]:border-amber-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+									/>
+								</div>
+								<div className="grid grid-cols-2 gap-2">
+									<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+										<div className="flex items-center justify-between mb-1">
+											<div className="text-[10px] font-medium text-slate-300">Damping</div>
+											<span className="text-[10px] text-slate-500 font-mono">
+												{(cursorOverlay?.rotationDamping ?? 7).toFixed(1)}
+											</span>
+										</div>
+										<Slider
+											value={[cursorOverlay?.rotationDamping ?? 7]}
+											onValueChange={(values) =>
+												onCursorOverlayChange?.({ rotationDamping: values[0] })
+											}
+											min={0.5}
+											max={30}
+											step={0.1}
+											className="w-full [&_[role=slider]]:bg-amber-400 [&_[role=slider]]:border-amber-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+										/>
+									</div>
+									<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+										<div className="flex items-center justify-between mb-1">
+											<div className="text-[10px] font-medium text-slate-300">Coast damping</div>
+											<span className="text-[10px] text-slate-500 font-mono">
+												{(cursorOverlay?.rotationCoastDamping ?? 12).toFixed(1)}
+											</span>
+										</div>
+										<Slider
+											value={[cursorOverlay?.rotationCoastDamping ?? 12]}
+											onValueChange={(values) =>
+												onCursorOverlayChange?.({ rotationCoastDamping: values[0] })
+											}
+											min={0.5}
+											max={40}
+											step={0.1}
+											className="w-full [&_[role=slider]]:bg-amber-400 [&_[role=slider]]:border-amber-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+										/>
+									</div>
+								</div>
+								<div className="grid grid-cols-2 gap-2">
+									<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+										<div className="flex items-center justify-between mb-1">
+											<div className="text-[10px] font-medium text-slate-300">Tip start</div>
+											<span className="text-[10px] text-slate-500 font-mono">
+												{(cursorOverlay?.rotationTipStartIntensity ?? 0.7).toFixed(2)}
+											</span>
+										</div>
+										<Slider
+											value={[cursorOverlay?.rotationTipStartIntensity ?? 0.7]}
+											onValueChange={(values) =>
+												onCursorOverlayChange?.({ rotationTipStartIntensity: values[0] })
+											}
+											min={0.1}
+											max={0.98}
+											step={0.01}
+											className="w-full [&_[role=slider]]:bg-amber-400 [&_[role=slider]]:border-amber-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+										/>
+									</div>
+									<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+										<div className="flex items-center justify-between mb-1">
+											<div className="text-[10px] font-medium text-slate-300">Tip max angle</div>
+											<span className="text-[10px] text-slate-500 font-mono">
+												{Math.round(cursorOverlay?.rotationTipMaxDeg ?? 48)}°
+											</span>
+										</div>
+										<Slider
+											value={[cursorOverlay?.rotationTipMaxDeg ?? 48]}
+											onValueChange={(values) =>
+												onCursorOverlayChange?.({ rotationTipMaxDeg: values[0] })
+											}
+											min={0}
+											max={120}
+											step={1}
+											className="w-full [&_[role=slider]]:bg-amber-400 [&_[role=slider]]:border-amber-400 [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+										/>
+									</div>
+								</div>
+							</div>
+						)}
+						<div className="flex items-center justify-between">
+							<div className="text-[10px] text-slate-300">Stop movement at end</div>
+							<Switch
+								checked={cursorOverlay?.stopAtEnd ?? false}
+								onCheckedChange={(stopAtEnd) => onCursorOverlayChange?.({ stopAtEnd })}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+						{cursorOverlay?.stopAtEnd && (
+							<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+								<div className="flex items-center justify-between mb-1">
+									<div className="text-[10px] font-medium text-slate-300">Freeze lead-out</div>
+									<span className="text-[10px] text-slate-500 font-mono">
+										{Math.round(cursorOverlay?.stopAtEndMs ?? 300)}ms
+									</span>
+								</div>
+								<Slider
+									value={[cursorOverlay?.stopAtEndMs ?? 300]}
+									onValueChange={(values) => onCursorOverlayChange?.({ stopAtEndMs: values[0] })}
+									min={80}
+									max={1800}
+									step={20}
+									className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+								/>
+							</div>
+						)}
+						<div className="flex items-center justify-between">
+							<div className="text-[10px] text-slate-300">Remove cursor shakes</div>
+							<Switch
+								checked={cursorOverlay?.removeShakes ?? true}
+								onCheckedChange={(removeShakes) => onCursorOverlayChange?.({ removeShakes })}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+						{cursorOverlay?.removeShakes && (
+							<div className="p-2 rounded-lg bg-white/5 border border-white/5">
+								<div className="flex items-center justify-between mb-1">
+									<div className="text-[10px] font-medium text-slate-300">
+										Shake filter strength
+									</div>
+									<span className="text-[10px] text-slate-500 font-mono">
+										{Math.round((cursorOverlay?.shakeThreshold ?? 0.0018) * 10000)}
+									</span>
+								</div>
+								<Slider
+									value={[cursorOverlay?.shakeThreshold ?? 0.0018]}
+									onValueChange={(values) => onCursorOverlayChange?.({ shakeThreshold: values[0] })}
+									min={0.0003}
+									max={0.008}
+									step={0.0001}
+									className="w-full [&_[role=slider]]:bg-[#34B27B] [&_[role=slider]]:border-[#34B27B] [&_[role=slider]]:h-3 [&_[role=slider]]:w-3"
+								/>
+							</div>
+						)}
+						<div className="flex items-center justify-between">
+							<div className="text-[10px] text-slate-300">Optimize original cursor types</div>
+							<Switch
+								checked={cursorOverlay?.optimizeCursorTypes ?? true}
+								onCheckedChange={(optimizeCursorTypes) =>
+									onCursorOverlayChange?.({ optimizeCursorTypes })
+								}
+								className="data-[state=checked]:bg-[#34B27B] scale-90"
+							/>
+						</div>
+					</div>
 				</div>
 
 				<Accordion type="multiple" defaultValue={["effects", "background"]} className="space-y-1">
@@ -610,7 +1072,7 @@ export function SettingsPanel({
 
 											{(wallpaperPaths.length > 0
 												? wallpaperPaths
-												: WALLPAPER_RELATIVE.map((p) => `/${p}`)
+												: [`/${DEFAULT_WALLPAPER_RELATIVE}`]
 											).map((path) => {
 												const isSelected = (() => {
 													if (!selected) return false;
@@ -620,7 +1082,9 @@ export function SettingsPanel({
 															s.replace(/^file:\/\//, "").replace(/^\//, "");
 														if (clean(selected).endsWith(clean(path))) return true;
 														if (clean(path).endsWith(clean(selected))) return true;
-													} catch {}
+													} catch {
+														// best-effort path compare; ignore parse errors
+													}
 													return false;
 												})();
 												return (

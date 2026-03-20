@@ -1,7 +1,21 @@
 import { Application, BlurFilter, Container, Graphics, Sprite, Texture } from "pixi.js";
+import {
+	type CursorSmoothingState,
+	drawCursorOnCanvas,
+	mapCursorToStage,
+	normalizeCursorOverlaySettings,
+	resolveCursorSampleAtTime,
+	transformPointByZoom,
+} from "@/components/video-editor/cursorOverlay";
+import { getTypingCursorHideAmountAtTime } from "@/components/video-editor/keyboardTelemetry";
+import { getMouseClickPressAmountAtTime } from "@/components/video-editor/mouseTelemetry";
 import type {
 	AnnotationRegion,
 	CropRegion,
+	CursorOverlaySettings,
+	CursorTelemetryPoint,
+	KeyboardTelemetryEvent,
+	MouseClickTelemetryEvent,
 	SpeedRegion,
 	ZoomRegion,
 } from "@/components/video-editor/types";
@@ -31,9 +45,14 @@ interface FrameRenderConfig {
 	videoWidth: number;
 	videoHeight: number;
 	annotationRegions?: AnnotationRegion[];
+	cursorTelemetry?: CursorTelemetryPoint[];
+	keyboardTelemetry?: KeyboardTelemetryEvent[];
+	mouseTelemetry?: MouseClickTelemetryEvent[];
+	cursorOverlay?: CursorOverlaySettings;
 	speedRegions?: SpeedRegion[];
 	previewWidth?: number;
 	previewHeight?: number;
+	videoDurationMs?: number;
 }
 
 interface AnimationState {
@@ -60,6 +79,7 @@ export class FrameRenderer {
 	private animationState: AnimationState;
 	private layoutCache: any = null;
 	private currentVideoTime = 0;
+	private cursorSmoothingState: CursorSmoothingState | null = null;
 
 	constructor(config: FrameRenderConfig) {
 		this.config = config;
@@ -283,7 +303,9 @@ export class FrameRenderer {
 			const oldTexture = this.videoSprite.texture;
 			const newTexture = Texture.from(videoFrame as any);
 			this.videoSprite.texture = newTexture;
-			oldTexture.destroy(true);
+			// Avoid destroying the underlying texture source aggressively; this can
+			// invalidate resources used by the live editor preview in some runtimes.
+			oldTexture.destroy(false);
 		}
 
 		// Apply layout
@@ -318,6 +340,16 @@ export class FrameRenderer {
 		// Composite with shadows to final output canvas
 		this.compositeWithShadows();
 
+		if (
+			this.config.cursorOverlay?.enabled &&
+			this.config.cursorTelemetry &&
+			this.config.cursorTelemetry.length > 0 &&
+			this.compositeCtx &&
+			this.layoutCache
+		) {
+			this.renderCursor(this.compositeCtx, timeMs);
+		}
+
 		// Render annotations on top if present
 		if (
 			this.config.annotationRegions &&
@@ -340,6 +372,79 @@ export class FrameRenderer {
 				scaleFactor,
 			);
 		}
+	}
+
+	private renderCursor(ctx: CanvasRenderingContext2D, timeMs: number): void {
+		const telemetry = this.config.cursorTelemetry ?? [];
+		if (telemetry.length === 0) return;
+
+		const overlay = normalizeCursorOverlaySettings(this.config.cursorOverlay);
+		if (!overlay.enabled) return;
+		const previousState =
+			this.cursorSmoothingState && timeMs < this.cursorSmoothingState.timeMs
+				? null
+				: this.cursorSmoothingState;
+
+		const resolved = resolveCursorSampleAtTime({
+			samples: telemetry,
+			timeMs,
+			settings: overlay,
+			previous: previousState,
+			durationMs: this.config.videoDurationMs,
+		});
+		if (!resolved) {
+			this.cursorSmoothingState = null;
+			return;
+		}
+		this.cursorSmoothingState = resolved.state;
+		if (!resolved.visible) return;
+		const typingHideAmount = overlay.cursorOffWhenTyping
+			? getTypingCursorHideAmountAtTime(
+					this.config.keyboardTelemetry ?? [],
+					timeMs,
+					overlay.cursorTypingHideDelayMs,
+				)
+			: 0;
+		if (typingHideAmount >= 0.999) return;
+		const clickPressAmount = getMouseClickPressAmountAtTime(
+			this.config.mouseTelemetry ?? [],
+			timeMs,
+			100,
+		);
+
+		const stagePoint = mapCursorToStage(resolved.point, this.config.cropRegion, {
+			x: this.layoutCache.baseOffset.x + this.layoutCache.maskRect.x,
+			y: this.layoutCache.baseOffset.y + this.layoutCache.maskRect.y,
+			width: this.layoutCache.maskRect.width,
+			height: this.layoutCache.maskRect.height,
+		});
+		if (!stagePoint) return;
+
+		const zoomedPoint = transformPointByZoom(
+			stagePoint,
+			this.layoutCache.stageSize,
+			this.animationState.scale,
+			this.animationState.focusX,
+			this.animationState.focusY,
+		);
+
+		const previewHeight = this.config.previewHeight || this.config.height;
+		const outputScale = this.config.height / Math.max(1, previewHeight);
+		const cursorScale = Math.max(0.84, 1 - typingHideAmount * 0.16);
+		const clickScale = Math.max(0.86, 1 - clickPressAmount * 0.14);
+		const cursorOpacity = Math.max(0, 1 - typingHideAmount);
+		ctx.save();
+		ctx.globalAlpha = cursorOpacity;
+		drawCursorOnCanvas(
+			ctx,
+			zoomedPoint,
+			{
+				...overlay,
+				size: overlay.size * outputScale * cursorScale * clickScale,
+			},
+			resolved.rotationDeg,
+		);
+		ctx.restore();
 	}
 
 	private updateLayout(): void {
@@ -551,7 +656,8 @@ export class FrameRenderer {
 		}
 		this.backgroundSprite = null;
 		if (this.app) {
-			this.app.destroy(true, { children: true, texture: true, textureSource: true });
+			// Keep textureSource cleanup non-aggressive to avoid affecting other Pixi instances.
+			this.app.destroy(true, { children: true, texture: true, textureSource: false });
 			this.app = null;
 		}
 		this.cameraContainer = null;
@@ -562,5 +668,6 @@ export class FrameRenderer {
 		this.shadowCtx = null;
 		this.compositeCanvas = null;
 		this.compositeCtx = null;
+		this.cursorSmoothingState = null;
 	}
 }

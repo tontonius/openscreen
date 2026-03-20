@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
 	app,
 	BrowserWindow,
+	desktopCapturer,
 	dialog,
 	ipcMain,
 	Menu,
@@ -61,6 +62,7 @@ let mainWindow: BrowserWindow | null = null;
 let sourceSelectorWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let selectedSourceName = "";
+let selectedDesktopSourceId: string | null = null;
 
 // Tray Icons
 const defaultTrayIcon = getTrayIcon("openscreen.png");
@@ -320,6 +322,34 @@ app.whenReady().then(async () => {
 		}
 	}
 
+	session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+		try {
+			if (!selectedDesktopSourceId) {
+				callback({ video: undefined, audio: undefined });
+				return;
+			}
+
+			const sources = await desktopCapturer.getSources({
+				types: ["screen", "window"],
+				thumbnailSize: { width: 1, height: 1 },
+				fetchWindowIcons: false,
+			});
+			const selectedSource = sources.find((source) => source.id === selectedDesktopSourceId);
+			if (!selectedSource) {
+				callback({ video: undefined, audio: undefined });
+				return;
+			}
+
+			callback({
+				video: selectedSource,
+				audio: undefined,
+			});
+		} catch (error) {
+			console.error("display-media request handler failed:", error);
+			callback({ video: undefined, audio: undefined });
+		}
+	});
+
 	// Listen for HUD overlay quit event (macOS only)
 	ipcMain.on("hud-overlay-close", () => {
 		app.quit();
@@ -342,6 +372,9 @@ app.whenReady().then(async () => {
 			if (!recording) {
 				if (mainWindow) mainWindow.restore();
 			}
+		},
+		(source) => {
+			selectedDesktopSourceId = typeof source?.id === "string" ? source.id : null;
 		},
 	);
 	createWindow();
