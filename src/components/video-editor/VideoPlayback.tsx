@@ -379,9 +379,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 			isDraggingFocusRef.current = false;
 			try {
 				event.currentTarget.releasePointerCapture(event.pointerId);
-			} catch {
-				// releasePointerCapture is optional if pointer was not captured
-			}
+			} catch {}
 		};
 
 		const handleOverlayPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -479,9 +477,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 				requestAnimationFrame(() => {
 					const finalApp = appRef.current;
 					if (wasPlaying && video) {
-						video.play().catch(() => {
-							// play() can reject if interrupted
-						});
+						video.play().catch(() => {});
 					}
 					if (tickerWasStarted && finalApp?.ticker) {
 						finalApp.ticker.start();
@@ -783,9 +779,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 					// no-op
 				}
 				activeKeyboardAudioRef.current = audio;
-				void audio.play().catch(() => {
-					// playback can fail if interrupted
-				});
+				void audio.play().catch(() => {});
 			};
 
 			const tick = () => {
@@ -847,9 +841,7 @@ const VideoPlayback = forwardRef<VideoPlaybackRef, VideoPlaybackProps>(
 				audio.volume = 0.3 + (Math.random() * 2 - 1) * 0.06;
 				audio.playbackRate = 1 + (Math.random() * 2 - 1) * 0.05;
 				activeMouseClickAudioRef.current = audio;
-				void audio.play().catch(() => {
-					// playback can fail if interrupted
-				});
+				void audio.play().catch(() => {});
 			};
 
 			const tick = () => {

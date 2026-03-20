@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export interface AudioLevelMeterOptions {
 	enabled: boolean;
@@ -12,22 +12,6 @@ export function useAudioLevelMeter(options: AudioLevelMeterOptions) {
 	const analyserRef = useRef<AnalyserNode | null>(null);
 	const streamRef = useRef<MediaStream | null>(null);
 	const animationFrameRef = useRef<number | null>(null);
-
-	const cleanup = useCallback(() => {
-		if (animationFrameRef.current) {
-			cancelAnimationFrame(animationFrameRef.current);
-			animationFrameRef.current = null;
-		}
-		if (streamRef.current) {
-			streamRef.current.getTracks().forEach((track) => track.stop());
-			streamRef.current = null;
-		}
-		if (audioContextRef.current) {
-			audioContextRef.current.close();
-			audioContextRef.current = null;
-		}
-		analyserRef.current = null;
-	}, []);
 
 	useEffect(() => {
 		if (!options.enabled) {
@@ -103,5 +87,21 @@ export function useAudioLevelMeter(options: AudioLevelMeterOptions) {
 		};
 	}, [options.enabled, options.deviceId, options.smoothingFactor, cleanup]);
 
-	return { level, cleanup };
+	const cleanup = () => {
+		if (animationFrameRef.current) {
+			cancelAnimationFrame(animationFrameRef.current);
+			animationFrameRef.current = null;
+		}
+		if (streamRef.current) {
+			streamRef.current.getTracks().forEach((track) => track.stop());
+			streamRef.current = null;
+		}
+		if (audioContextRef.current) {
+			audioContextRef.current.close();
+			audioContextRef.current = null;
+		}
+		analyserRef.current = null;
+	};
+
+	return { level };
 }

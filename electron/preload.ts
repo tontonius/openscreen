@@ -23,7 +23,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
 	openSourceSelector: () => {
 		return ipcRenderer.invoke("open-source-selector");
 	},
-	selectSource: (source: ProcessedDesktopSource) => {
+	selectSource: (source: any) => {
 		return ipcRenderer.invoke("select-source", source);
 	},
 	getSelectedSource: () => {

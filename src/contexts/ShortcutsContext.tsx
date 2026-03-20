@@ -36,9 +36,7 @@ export function ShortcutsProvider({ children }: { children: ReactNode }) {
 	useEffect(() => {
 		getIsMac()
 			.then(setIsMac)
-			.catch(() => {
-				// platform probe is optional
-			});
+			.catch(() => {});
 
 		window.electronAPI
 			.getShortcuts?.()
@@ -47,9 +45,7 @@ export function ShortcutsProvider({ children }: { children: ReactNode }) {
 					setShortcuts(mergeWithDefaults(saved as Partial<ShortcutsConfig>));
 				}
 			})
-			.catch(() => {
-				// shortcuts load is optional in web/dev
-			});
+			.catch(() => {});
 	}, []);
 
 	const persistShortcuts = useCallback(

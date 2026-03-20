@@ -41,7 +41,6 @@ import type {
 	AnnotationType,
 	CropRegion,
 	CursorOverlaySettings,
-	FigureData,
 	PlaybackSpeed,
 	ZoomDepth,
 } from "./types";
@@ -120,7 +119,7 @@ interface SettingsPanelProps {
 	onAnnotationContentChange?: (id: string, content: string) => void;
 	onAnnotationTypeChange?: (id: string, type: AnnotationType) => void;
 	onAnnotationStyleChange?: (id: string, style: Partial<AnnotationRegion["style"]>) => void;
-	onAnnotationFigureDataChange?: (id: string, figureData: FigureData) => void;
+	onAnnotationFigureDataChange?: (id: string, figureData: any) => void;
 	onAnnotationDelete?: (id: string) => void;
 	selectedSpeedId?: string | null;
 	selectedSpeedValue?: PlaybackSpeed | null;
@@ -1082,9 +1081,7 @@ export function SettingsPanel({
 															s.replace(/^file:\/\//, "").replace(/^\//, "");
 														if (clean(selected).endsWith(clean(path))) return true;
 														if (clean(path).endsWith(clean(selected))) return true;
-													} catch {
-														// best-effort path compare; ignore parse errors
-													}
+													} catch {}
 													return false;
 												})();
 												return (

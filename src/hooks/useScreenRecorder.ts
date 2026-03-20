@@ -1,5 +1,5 @@
 import { fixWebmDuration } from "@fix-webm-duration/fix";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 // Target visually lossless 4K @ 60fps; fall back gracefully when hardware cannot keep up
@@ -64,7 +64,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 	const startTime = useRef<number>(0);
 	const systemCursorHidden = useRef(false);
 
-	const hideSystemCursor = useCallback(async () => {
+	const hideSystemCursor = async () => {
 		if (!window.electronAPI?.hideSystemCursor || systemCursorHidden.current) return;
 		try {
 			await window.electronAPI.hideSystemCursor();
@@ -72,9 +72,9 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		} catch (error) {
 			console.warn("Failed to hide system cursor:", error);
 		}
-	}, []);
+	};
 
-	const showSystemCursor = useCallback(async () => {
+	const showSystemCursor = async () => {
 		if (!window.electronAPI?.showSystemCursor || !systemCursorHidden.current) return;
 		try {
 			await window.electronAPI.showSystemCursor();
@@ -83,7 +83,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 		} finally {
 			systemCursorHidden.current = false;
 		}
-	}, []);
+	};
 
 	const selectMimeType = () => {
 		const preferred = [
@@ -155,9 +155,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				microphoneStream.current = null;
 			}
 			if (mixingContext.current) {
-				mixingContext.current.close().catch(() => {
-					// close may reject if already closed
-				});
+				mixingContext.current.close().catch(() => {});
 				mixingContext.current = null;
 			}
 			mediaRecorder.current.stop();
@@ -180,9 +178,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 			if (cleanup) cleanup();
 			void showSystemCursor();
 			if (nativeRecordingActive.current) {
-				void window.electronAPI?.stopNativeScreenRecording?.().catch(() => {
-					// stop may fail during teardown
-				});
+				void window.electronAPI?.stopNativeScreenRecording?.().catch(() => {});
 				nativeRecordingActive.current = false;
 			}
 
@@ -202,9 +198,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				microphoneStream.current = null;
 			}
 			if (mixingContext.current) {
-				mixingContext.current.close().catch(() => {
-					// close may reject if already closed
-				});
+				mixingContext.current.close().catch(() => {});
 				mixingContext.current = null;
 			}
 		};
@@ -480,9 +474,7 @@ export function useScreenRecorder(): UseScreenRecorderReturn {
 				microphoneStream.current = null;
 			}
 			if (mixingContext.current) {
-				mixingContext.current.close().catch(() => {
-					// close may reject if already closed
-				});
+				mixingContext.current.close().catch(() => {});
 				mixingContext.current = null;
 			}
 			await showSystemCursor();

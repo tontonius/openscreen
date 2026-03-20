@@ -27,8 +27,8 @@ interface Window {
 		getSources: (opts: Electron.SourcesOptions) => Promise<ProcessedDesktopSource[]>;
 		switchToEditor: () => Promise<void>;
 		openSourceSelector: () => Promise<void>;
-		selectSource: (source: ProcessedDesktopSource) => Promise<ProcessedDesktopSource | null>;
-		getSelectedSource: () => Promise<ProcessedDesktopSource | null>;
+		selectSource: (source: any) => Promise<any>;
+		getSelectedSource: () => Promise<any>;
 		storeRecordedVideo: (
 			videoData: ArrayBuffer,
 			fileName: string,

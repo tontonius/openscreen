@@ -381,9 +381,7 @@ export class StreamingVideoDecoder {
 		if (this.demuxer) {
 			try {
 				this.demuxer.destroy();
-			} catch {
-				// demuxer may already be destroyed
-			}
+			} catch {}
 			this.demuxer = null;
 		}
 	}

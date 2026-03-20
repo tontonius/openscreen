@@ -888,26 +888,6 @@ export default function VideoEditor() {
 		}
 	}, [selectedSpeedId, speedRegions]);
 
-	const showExportSuccessToast = useCallback((filePath: string) => {
-		toast.success(`Exported successfully to ${filePath}`, {
-			action: {
-				label: "Show in Folder",
-				onClick: async () => {
-					try {
-						const result = await window.electronAPI.revealInFolder(filePath);
-						if (!result.success) {
-							const errorMessage =
-								result.error || result.message || "Failed to reveal item in folder.";
-							toast.error(errorMessage);
-						}
-					} catch (err) {
-						toast.error(`Error revealing in folder: ${String(err)}`);
-					}
-				},
-			},
-		});
-	}, []);
-
 	const handleExport = useCallback(
 		async (settings: ExportSettings) => {
 			if (!videoPath) {
@@ -1232,6 +1212,26 @@ export default function VideoEditor() {
 	const handleExportDialogClose = useCallback(() => {
 		setShowExportDialog(false);
 		setExportedFilePath(undefined);
+	}, []);
+
+	const showExportSuccessToast = useCallback((filePath: string) => {
+		toast.success(`Exported successfully to ${filePath}`, {
+			action: {
+				label: "Show in Folder",
+				onClick: async () => {
+					try {
+						const result = await window.electronAPI.revealInFolder(filePath);
+						if (!result.success) {
+							const errorMessage =
+								result.error || result.message || "Failed to reveal item in folder.";
+							toast.error(errorMessage);
+						}
+					} catch (err) {
+						toast.error(`Error revealing in folder: ${String(err)}`);
+					}
+				},
+			},
+		});
 	}, []);
 
 	if (loading) {
